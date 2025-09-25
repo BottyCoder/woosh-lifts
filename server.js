@@ -10,7 +10,7 @@ const REGISTRY_PATH   = process.env.REGISTRY_PATH || "./data/registry.csv";
 const HMAC_SECRET     = process.env.SMSPORTAL_HMAC_SECRET || "";
 
 const app = express();
-app.use(express.json({ type: ["application/json", "application/*+json"] }));
+
 app.use(morgan("tiny"));
 
 // CSV registry: msisdn -> { building, building_code, lift_id, recipients[] }
@@ -34,6 +34,12 @@ loadRegistry();
 app.get("/", (_req, res) => res.status(200).send("woosh-lifts: ok"));
 
 function verifySignature(req, body) {
+
+function toStr(body){
+  return Buffer.isBuffer(body) ? body.toString("utf8") :
+         typeof body === "string" ? body :
+         typeof body === "object" && body !== null ? JSON.stringify(body) : "";
+}
   const sig = req.header("x-signature") || "";
   const calc = crypto.createHmac("sha256", HMAC_SECRET).update(body).digest("hex");
   return sig && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(calc));
@@ -41,7 +47,7 @@ function verifySignature(req, body) {
 
 app.post("/sms/inbound", express.text({ type: "*/*" }), async (req, res) => {
   try {
-    const raw = req.body || "";
+    const raw = toStr(req.body) || "";
     if (!verifySignature(req, raw)) {
       console.warn("[inbound] invalid signature");
       return res.status(401).json({ error: "invalid signature" });
