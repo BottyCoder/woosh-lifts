@@ -127,3 +127,38 @@ app.all("/sms/portal", express.raw({ type: "*/*" }), (req, res) => {
     res.status(200).json({ status: "ok" });
   }
 });
+
+// -------- SMSPortal-friendly plain endpoint (no HMAC) --------
+// Accepts JSON or form-encoded; maps their field names.
+const urlencoded = require("express").urlencoded;
+const json = require("express").json;
+
+// Ensure the in-memory "latest" buffer exists even if /sms/inbound hasn't run yet
+if (typeof global.LAST_INBOUND === "undefined") global.LAST_INBOUND = null;
+
+app.post(
+  "/sms/plain",
+  urlencoded({ extended: false }),
+  json({ type: ["application/json", "application/*+json"] }),
+  (req, res) => {
+    const b = req.body || {};
+
+    // Map common provider names (incl. SMSPortal's example)
+    const message   = (b.message ?? b.text ?? b.body ?? b.incomingData ?? "").toString();
+    const from      = (b.msisdn ?? b.from ?? b.sourcePhoneNumber ?? "").toString();
+    const shortcode = (b.shortcode ?? b.short_code ?? b.to ?? b.destinationPhoneNumber ?? "").toString();
+    const id        = (b.id ?? b.messageId ?? b.message_id ?? b.incomingId ?? b.eventId ?? `evt_${Date.now()}`).toString();
+
+    global.LAST_INBOUND = {
+      id,
+      from,
+      shortcode,
+      message,
+      received_at: new Date().toISOString(),
+      raw: b
+    };
+
+    // Always 200 OK so SMSPortal's "Test" passes
+    return res.status(200).json({ status: "ok" });
+  }
+);
