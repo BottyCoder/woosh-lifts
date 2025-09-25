@@ -13,6 +13,9 @@ const app = express();
 // no global express.json(); we need raw bytes for HMAC
 app.use(morgan("tiny"));
 
+// unify latest-inbound buffer
+global.LAST_INBOUND = (typeof global.LAST_INBOUND !== "undefined") ? global.LAST_INBOUND : null;
+
 // ---------- registry ----------
 let REGISTRY = new Map();
 function loadRegistry() {
