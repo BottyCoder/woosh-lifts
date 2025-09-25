@@ -1,9 +1,8 @@
 const express = require("express");
-const morgan = require("morgan");
-const crypto = require("crypto");
-const fs = require("fs");
-// Node 20 has global fetch; if you prefer node-fetch v2, uncomment next line:
-// const fetch = require("node-fetch");
+const morgan  = require("morgan");
+const crypto  = require("crypto");
+const fs      = require("fs");
+const fetch   = require("node-fetch"); // explicit to avoid Alpine quirks
 
 const BRIDGE_BASE_URL = process.env.BRIDGE_BASE_URL || "https://wa.woosh.ai";
 const BRIDGE_API_KEY  = process.env.BRIDGE_API_KEY || "";
@@ -90,5 +89,4 @@ app.post("/admin/registry/reload", (_req, res) => {
 });
 
 const port = Number(process.env.PORT) || 8080;
-// Bind to 0.0.0.0 for Cloud Run
 app.listen(port, "0.0.0.0", () => console.log(`woosh-lifts listening on :${port}`));
