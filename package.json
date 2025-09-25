@@ -2,14 +2,15 @@
   "name": "woosh-lifts",
   "version": "1.0.0",
   "private": true,
-  "type": "module",
+  "type": "commonjs",
   "dependencies": {
     "express": "^4.19.2",
     "morgan": "^1.10.0",
     "node-fetch": "^2.7.0"
   },
   "scripts": {
-    "start": "node src/server.js",
-    "postinstall": "echo 'ready 🚀'"
-  }
+    "start": "node server.js",
+    "postinstall": "echo 'ready \ud83d\ude80'"
+  },
+  "main": "server.js"
 }
