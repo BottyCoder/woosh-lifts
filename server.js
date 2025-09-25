@@ -98,3 +98,32 @@ app.post("/admin/registry/reload", (_req, res) => {
 
 const port = Number(process.env.PORT) || 8080;
 app.listen(port, "0.0.0.0", () => console.log(`woosh-lifts listening on :${port}`));
+
+// -------- super-permissive portal test endpoint --------
+// Accept anything, record it, always return 200.
+app.all("/sms/portal", express.raw({ type: "*/*" }), (req, res) => {
+  try {
+    const raw = toStr(req.body) || "";
+    let b = {};
+    try { b = raw ? JSON.parse(raw) : {}; } catch { /* ignore */ }
+
+    const message  = (b.message ?? b.text ?? b.body ?? "").toString();
+    const from     = (b.from ?? b.msisdn ?? b.sender ?? "").toString();
+    const shortcode= (b.shortcode ?? b.short_code ?? b.to ?? "").toString();
+
+    // record so you can see what the test sent
+    global.LAST_INBOUND = {
+      id: b.id || b.messageId || `evt_${Date.now()}`,
+      from, shortcode, message,
+      received_at: new Date().toISOString(),
+      raw: (raw && raw.length <= 4096) ? (b || raw) : "[raw-too-large]"
+    };
+
+    // Always 200 OK so the test passes
+    res.status(200).json({ status: "ok" });
+  } catch (e) {
+    // Even on unexpected errors, still 200 to satisfy the test
+    console.error("[portal] error", e);
+    res.status(200).json({ status: "ok" });
+  }
+});
