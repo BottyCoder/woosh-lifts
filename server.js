@@ -2,7 +2,7 @@ const express = require("express");
 const morgan  = require("morgan");
 const crypto  = require("crypto");
 const fs      = require("fs");
-const fetch   = require("node-fetch"); // explicit to avoid Alpine quirks
+const fetch   = require("node-fetch");
 
 const BRIDGE_BASE_URL = process.env.BRIDGE_BASE_URL || "https://wa.woosh.ai";
 const BRIDGE_API_KEY  = process.env.BRIDGE_API_KEY || "";
@@ -10,17 +10,17 @@ const REGISTRY_PATH   = process.env.REGISTRY_PATH || "./data/registry.csv";
 const HMAC_SECRET     = process.env.SMSPORTAL_HMAC_SECRET || "";
 
 const app = express();
-
+// no global express.json(); we need raw bytes for HMAC
 app.use(morgan("tiny"));
 
-// CSV registry: msisdn -> { building, building_code, lift_id, recipients[] }
+// ---------- registry ----------
 let REGISTRY = new Map();
 function loadRegistry() {
   REGISTRY = new Map();
   if (!fs.existsSync(REGISTRY_PATH)) return;
-  const raw = fs.readFileSync(REGISTRY_PATH, "utf8").split(/\r?\n/).filter(Boolean);
-  raw.shift(); // header
-  for (const line of raw) {
+  const rows = fs.readFileSync(REGISTRY_PATH, "utf8").split(/\r?\n/).filter(Boolean);
+  rows.shift(); // header
+  for (const line of rows) {
     const cells = line.split(",");
     if (cells.length < 6) continue;
     const [building, building_code, lift_id, msisdn, ...recips] = cells.map(s => s.trim());
@@ -33,26 +33,29 @@ loadRegistry();
 
 app.get("/", (_req, res) => res.status(200).send("woosh-lifts: ok"));
 
-function verifySignature(req, body) {
-
-function toStr(body){
-  return Buffer.isBuffer(body) ? body.toString("utf8") :
-         typeof body === "string" ? body :
-         typeof body === "object" && body !== null ? JSON.stringify(body) : "";
+// ---------- HMAC helpers ----------
+function toStr(body) {
+  return Buffer.isBuffer(body) ? body.toString("utf8")
+       : typeof body === "string" ? body
+       : (body && typeof body === "object") ? JSON.stringify(body)
+       : "";
 }
+function verifySignature(req, raw) {
   const sig = req.header("x-signature") || "";
-  const calc = crypto.createHmac("sha256", HMAC_SECRET).update(body).digest("hex");
-  return sig && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(calc));
+  const calc = crypto.createHmac("sha256", HMAC_SECRET).update(raw).digest("hex");
+  if (!sig || sig.length !== calc.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(calc));
 }
 
-app.post("/sms/inbound", express.text({ type: "*/*" }), async (req, res) => {
+// ---------- routes ----------
+app.post("/sms/inbound", express.raw({ type: "*/*" }), async (req, res) => {
   try {
     const raw = toStr(req.body) || "";
     if (!verifySignature(req, raw)) {
       console.warn("[inbound] invalid signature");
       return res.status(401).json({ error: "invalid signature" });
     }
-    const evt = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const evt = JSON.parse(raw);
     console.log("[inbound] event", evt);
 
     const msisdn = String(evt.from || "").replace(/\D/g, "");
@@ -69,12 +72,11 @@ Reply: ✅ Taking / 🆘 Need help`;
     const recipients = entry.recipients.slice(0, 5);
     let delivered = 0;
     for (const to of recipients) {
-      const payload = { to, text };
       try {
         const r = await fetch(`${BRIDGE_BASE_URL}/api/messages/send`, {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Api-Key": BRIDGE_API_KEY },
-          body: JSON.stringify(payload)
+          body: JSON.stringify({ to, text })
         });
         if (!r.ok) console.error("[forwarder] bridge error", r.status, await r.text());
         else delivered++;
