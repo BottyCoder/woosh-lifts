@@ -113,8 +113,9 @@ app.all("/sms/portal", express.raw({ type: "*/*" }), (req, res) => {
     try { b = raw ? JSON.parse(raw) : {}; } catch { /* ignore */ }
 
     const message  = (b.message ?? b.text ?? b.body ?? "").toString();
-    const from     = (b.from ?? b.msisdn ?? b.sender ?? "").toString();
-    const shortcode= (b.shortcode ?? b.short_code ?? b.to ?? "").toString();
+
+    const from      = (b.msisdn ?? b.from ?? b.sourcePhoneNumber ?? b.phoneNumber ?? "").toString();
+    const shortcode = (b.shortcode ?? b.short_code ?? b.to ?? b.destinationPhoneNumber ?? b.sc ?? "").toString();
 
     // record so you can see what the test sent
     global.LAST_INBOUND = {
