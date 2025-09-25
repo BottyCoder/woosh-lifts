@@ -1,59 +1,94 @@
-const express = require('express');
-const morgan = require('morgan');
-const cors = require('cors');
-const helmet = require('helmet');
-const crypto = require('crypto');
+const express = require("express");
+const morgan = require("morgan");
+const crypto = require("crypto");
+const fs = require("fs");
+// Node 20 has global fetch; if you prefer node-fetch v2, uncomment next line:
+// const fetch = require("node-fetch");
+
+const BRIDGE_BASE_URL = process.env.BRIDGE_BASE_URL || "https://wa.woosh.ai";
+const BRIDGE_API_KEY  = process.env.BRIDGE_API_KEY || "";
+const REGISTRY_PATH   = process.env.REGISTRY_PATH || "./data/registry.csv";
+const HMAC_SECRET     = process.env.SMSPORTAL_HMAC_SECRET || "";
 
 const app = express();
-app.use(helmet());
-app.use(cors());
-// capture raw body for HMAC
-app.use(express.json({ limit: '1mb', verify: (req, _res, buf) => { req.rawBody = buf; }}));
-app.use(morgan('tiny'));
+app.use(express.json({ type: ["application/json", "application/*+json"] }));
+app.use(morgan("tiny"));
 
-const PORT = process.env.PORT || 8080;
+// CSV registry: msisdn -> { building, building_code, lift_id, recipients[] }
+let REGISTRY = new Map();
+function loadRegistry() {
+  REGISTRY = new Map();
+  if (!fs.existsSync(REGISTRY_PATH)) return;
+  const raw = fs.readFileSync(REGISTRY_PATH, "utf8").split(/\r?\n/).filter(Boolean);
+  raw.shift(); // header
+  for (const line of raw) {
+    const cells = line.split(",");
+    if (cells.length < 6) continue;
+    const [building, building_code, lift_id, msisdn, ...recips] = cells.map(s => s.trim());
+    const recipients = recips.filter(Boolean);
+    REGISTRY.set((msisdn || "").replace(/\D/g, ""), { building, building_code, lift_id, recipients });
+  }
+  console.log(`[registry] loaded ${REGISTRY.size} entries from ${REGISTRY_PATH}`);
+}
+loadRegistry();
 
-app.get('/', (_req, res) => res.status(200).send('woosh-lifts: ok'));
+app.get("/", (_req, res) => res.status(200).send("woosh-lifts: ok"));
 
-function safeEqual(a, b) {
-  const A = Buffer.from(a || '', 'utf8');
-  const B = Buffer.from(b || '', 'utf8');
-  if (A.length !== B.length) return false;
-  return crypto.timingSafeEqual(A, B);
+function verifySignature(req, body) {
+  const sig = req.header("x-signature") || "";
+  const calc = crypto.createHmac("sha256", HMAC_SECRET).update(body).digest("hex");
+  return sig && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(calc));
 }
 
-app.post('/sms/inbound', async (req, res) => {
+app.post("/sms/inbound", express.text({ type: "*/*" }), async (req, res) => {
   try {
-    const provider   = req.header('x-provider')   || 'smsportal';
-    const signature  = req.header('x-signature')  || '';
-    const requestId  = req.header('x-request-id') || '';
-    const secret     = process.env.SMSPORTAL_HMAC_SECRET || '';
+    const raw = req.body || "";
+    if (!verifySignature(req, raw)) {
+      console.warn("[inbound] invalid signature");
+      return res.status(401).json({ error: "invalid signature" });
+    }
+    const evt = typeof raw === "string" ? JSON.parse(raw) : raw;
+    console.log("[inbound] event", evt);
 
-    // Compute expected HMAC over the raw body
-    const expected = crypto
-      .createHmac('sha256', secret)
-      .update(req.rawBody || Buffer.alloc(0))
-      .digest('hex');
-
-    if (!secret || !safeEqual(signature, expected)) {
-      console.warn('[inbound.smsportal] signature_mismatch', { requestId, provider, got: signature, expected });
-      // Still 200 to avoid provider retry storm; we log for investigation.
-      return res.status(200).json({ status: 'ok' });
+    const msisdn = String(evt.from || "").replace(/\D/g, "");
+    const entry = REGISTRY.get(msisdn);
+    if (!entry) {
+      console.warn(`[forwarder] no registry entry for msisdn=${msisdn}`);
+      return res.status(200).json({ status: "ok", forwarded: false, reason: "no-registry" });
     }
 
-    console.log('[inbound.smsportal]', {
-      ok: true,
-      headers: { provider, signature, requestId },
-      body: req.body
-    });
+    const text = `[Lift Alert] ${entry.building} • ${entry.lift_id}
+Message: ${evt.message || "N/A"}
+Reply: ✅ Taking / 🆘 Need help`;
 
-    // TODO: enqueue -> map MSISDN -> recipients -> send WhatsApp via Bridge
-    return res.status(200).json({ status: 'ok' });
+    const recipients = entry.recipients.slice(0, 5);
+    let delivered = 0;
+    for (const to of recipients) {
+      const payload = { to, text };
+      try {
+        const r = await fetch(`${BRIDGE_BASE_URL}/api/messages/send`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Api-Key": BRIDGE_API_KEY },
+          body: JSON.stringify(payload)
+        });
+        if (!r.ok) console.error("[forwarder] bridge error", r.status, await r.text());
+        else delivered++;
+      } catch (e) {
+        console.error("[forwarder] fetch error", e);
+      }
+    }
+    return res.status(200).json({ status: "ok", forwarded: true, delivered, recipients });
   } catch (e) {
-    console.error('inbound error', e);
-    return res.status(500).json({ status: 'error' });
+    console.error("[inbound] error", e);
+    return res.status(500).json({ error: "server_error" });
   }
 });
 
-app.listen(PORT, () => console.log(`woosh-lifts listening on :${PORT}`));
+app.post("/admin/registry/reload", (_req, res) => {
+  loadRegistry();
+  res.json({ status: "ok", size: REGISTRY.size });
+});
 
+const port = Number(process.env.PORT) || 8080;
+// Bind to 0.0.0.0 for Cloud Run
+app.listen(port, "0.0.0.0", () => console.log(`woosh-lifts listening on :${port}`));
