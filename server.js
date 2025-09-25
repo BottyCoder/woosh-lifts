@@ -12,6 +12,8 @@ const HMAC_SECRET     = process.env.SMSPORTAL_HMAC_SECRET || "";
 const app = express();
 // no global express.json(); we need raw bytes for HMAC
 app.use(morgan("tiny"));
+// unified latest-inbound buffer for readers/writers
+global.LAST_INBOUND = (typeof global.LAST_INBOUND !== "undefined") ? global.LAST_INBOUND : null;
 
 // unify latest-inbound buffer
 global.LAST_INBOUND = (typeof global.LAST_INBOUND !== "undefined") ? global.LAST_INBOUND : null;
@@ -162,6 +164,14 @@ app.post(
     };
 
     // Always 200 OK so SMSPortal's "Test" passes
+    
+    global.LAST_INBOUND = global.LAST_INBOUND || { id:"seed", from:"", shortcode:"", message:"", received_at:new Date().toISOString(), raw:{} };
     return res.status(200).json({ status: "ok" });
   }
 );
+
+// --- latest inbound reader (always available) ---
+app.get("/api/inbound/latest", (_req, res) => {
+  if (!global.LAST_INBOUND) return res.status(404).json({ error: "no_inbound_yet" });
+  res.json(global.LAST_INBOUND);
+});
