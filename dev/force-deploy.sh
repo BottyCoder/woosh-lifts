@@ -9,8 +9,8 @@ IMAGE_TAG="force-${TIMESTAMP}"
 
 echo "📦 Building fresh image with tag: ${IMAGE_TAG}"
 
-# Build with no cache
-gcloud builds submit --tag "africa-south1-docker.pkg.dev/woosh-lifts-20250924-072759/cloud-run-source-deploy/woosh-lifts:${IMAGE_TAG}" --no-cache
+# Build with fresh tag to force rebuild
+gcloud builds submit --tag "africa-south1-docker.pkg.dev/woosh-lifts-20250924-072759/cloud-run-source-deploy/woosh-lifts:${IMAGE_TAG}"
 
 echo "🚀 Deploying with fresh image..."
 gcloud run deploy woosh-lifts \
