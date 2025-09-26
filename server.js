@@ -9,6 +9,8 @@ app.use(express.json({ limit: "256kb" }));       // ensure JSON works
 const ENV = process.env.ENV || "dev";
 const BRIDGE_BASE_URL = process.env.BRIDGE_BASE_URL || "https://wa.woosh.ai";
 const BRIDGE_API_KEY = process.env.BRIDGE_API_KEY;
+const BRIDGE_TEMPLATE_NAME = process.env.BRIDGE_TEMPLATE_NAME || "";  // e.g., sms_echo
+const BRIDGE_TEMPLATE_LANG = process.env.BRIDGE_TEMPLATE_LANG || "en";
 
 function log(event, extra = {}) {
   console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "woosh-lifts", env: ENV, event, ...extra }));
@@ -53,7 +55,8 @@ async function sendWaButtons(toE164Plus, bodyText, buttons /* [{id,title}] */) {
       svc:"woosh-lifts",
       env:process.env.ENV || "dev",
       event:"wa_send_fail",
-      to, status:r.status, body
+      to, status:r.status, body,
+      ...context
     }));
     throw new Error(`bridge ${r.status}`);
   }
@@ -66,6 +69,32 @@ async function sendWaButtons(toE164Plus, bodyText, buttons /* [{id,title}] */) {
     provider_id: body.id || body.messageId || "unknown",
     ...context
   }));
+  return body;
+}
+
+async function sendWaTemplate(toE164Plus, templateName, lang, params /* array of strings */, meta={}) {
+  const to = toE164Plus.replace(/^\+/, "");
+  const payload = {
+    to,
+    template: {
+      name: templateName,
+      language: lang,
+      components: [
+        { type: "body", parameters: params.map(p => ({ type:"text", text:String(p) })) }
+      ]
+    }
+  };
+  const r = await fetch(`${BRIDGE_BASE_URL}/api/messages/send`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Api-Key": BRIDGE_API_KEY },
+    body: JSON.stringify(payload)
+  });
+  const raw = await r.text(); let body; try { body = JSON.parse(raw); } catch { body = { raw }; }
+  if (!r.ok) {
+    log("wa_template_fail", { to, status:r.status, body, templateName, lang, ...meta });
+    throw new Error(`bridge ${r.status}`);
+  }
+  log("wa_template_ok", { to, provider_id: body.id || body.messageId || "unknown", templateName, lang, ...meta });
   return body;
 }
 
@@ -132,7 +161,18 @@ app.post("/sms/plain", async (req, res) => {
     };
 
     log("sms_received", { sms_id, from, text_len: text.length });
-    await sendWaText(from, `SMS received: "${text}"`, { sms_id, text_len: text.length });
+    const meta = { sms_id, text_len: text.length };
+    if (BRIDGE_TEMPLATE_NAME) {
+      try {
+        // Template with one {{1}} = the SMS text
+        await sendWaTemplate(from, BRIDGE_TEMPLATE_NAME, BRIDGE_TEMPLATE_LANG, [text], meta);
+      } catch (e) {
+        // Fallback to session text if template blocked/invalid
+        await sendWaText(from, `SMS received: "${text}"`, meta);
+      }
+    } else {
+      await sendWaText(from, `SMS received: "${text}"`, meta);
+    }
     return res.status(202).json({ ok: true, forwarded: true, sms_id });
   } catch (e) {
     console.error("[plain] error", String(e));
