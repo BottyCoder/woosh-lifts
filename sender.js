@@ -151,3 +151,8 @@ if (require.main === module) {
 }
 
 module.exports = { startSender, processWAMessage, sendToWhatsAppBridge };
+
+// Start the service if this file is run directly
+if (require.main === module) {
+  startSenderService();
+}

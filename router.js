@@ -152,3 +152,8 @@ if (require.main === module) {
 }
 
 module.exports = { startRouter, processSMSMessage };
+
+// Start the service if this file is run directly
+if (require.main === module) {
+  startRouterService();
+}
