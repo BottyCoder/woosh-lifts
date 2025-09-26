@@ -40,7 +40,7 @@ fi
 # Test 3: Latest inbound endpoint
 echo "🔍 Testing latest inbound endpoint..."
 LATEST_RESPONSE=$(curl -fsS "$URL/api/inbound/latest" 2>/dev/null || echo "FAILED")
-if [[ "$LATEST_RESPONSE" == *"id"* ]]; then
+if [[ "$LATEST_RESPONSE" == *"id"* && "$LATEST_RESPONSE" == *"message"* ]]; then
     echo "✅ Latest inbound: OK"
 else
     echo "❌ Latest inbound: FAILED ($LATEST_RESPONSE)"
@@ -50,7 +50,7 @@ fi
 echo "🔍 Testing admin ping bridge..."
 ADMIN_RESPONSE=$(curl -fsS -X POST "$URL/admin/ping-bridge" \
   -H "Content-Type: application/json" \
-  -d '{"to":"27824537125","text":"Smoke test ping ✅"}' \
+  -d '{"to":"+27824537125","text":"woosh-lifts bridge ping"}' \
   2>/dev/null || echo "FAILED")
 
 if [[ "$ADMIN_RESPONSE" == *"status"*"ok"* ]]; then
