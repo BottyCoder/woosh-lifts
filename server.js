@@ -46,8 +46,11 @@ async function sendWaButtons(toE164Plus, bodyText, buttons /* [{id,title}] */) {
     body: JSON.stringify(payload)
   });
   const raw = await r.text(); let body; try { body = JSON.parse(raw); } catch { body = { raw }; }
-  if (!r.ok) { log("wa_send_fail", { to, interactive: true, status: r.status, body }); throw new Error(`bridge ${r.status}`); }
-  log("wa_send_ok", { to, interactive: true, provider_id: body.id || body.messageId || "unknown" });
+  if (!r.ok) {
+    console.error(JSON.stringify({ event:"wa_send_fail", to, status:r.status, body }));
+    throw new Error(`bridge ${r.status}`);
+  }
+  console.log(JSON.stringify({ event:"wa_send_ok", to, provider_id: body.id || body.messageId || "unknown" }));
   return body;
 }
 
@@ -61,6 +64,16 @@ app.get("/api/inbound/latest", (_req, res) => {
     return res.status(404).json({ error: "no_inbound_yet" });
   }
   res.json(global.LAST_INBOUND);
+});
+
+// Clean admin status (no external calls)
+app.get("/admin/status", (_req, res) => {
+  res.json({ 
+    bridge: !!BRIDGE_API_KEY, 
+    secrets: !!BRIDGE_API_KEY,
+    env: ENV,
+    timestamp: new Date().toISOString()
+  });
 });
 
 app.post("/sms/plain", async (req, res) => {
@@ -150,7 +163,7 @@ app.post("/wa/webhook", async (req, res) => {
 
     await sendWaText(toPlus, reply);
     return res.status(200).json({ ok: true });
-  } catch (e) {
+    } catch (e) {
     log("wa_webhook_error", { err: String(e) });
     return res.status(200).json({ ok: true });
   }
