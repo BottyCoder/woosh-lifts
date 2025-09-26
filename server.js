@@ -15,7 +15,7 @@ function log(event, extra = {}) {
 }
 
 // WhatsApp Bridge helpers
-async function sendWaText(toE164Plus, text) {
+async function sendWaText(toE164Plus, text, context = {}) {
   const to = toE164Plus.replace(/^\+/, "");
   const r = await fetch(`${BRIDGE_BASE_URL}/api/messages/send`, {
     method: "POST",
@@ -45,12 +45,27 @@ async function sendWaButtons(toE164Plus, bodyText, buttons /* [{id,title}] */) {
     headers: { "Content-Type": "application/json", "X-Api-Key": BRIDGE_API_KEY },
     body: JSON.stringify(payload)
   });
-  const raw = await r.text(); let body; try { body = JSON.parse(raw); } catch { body = { raw }; }
+  const raw = await r.text();
+  let body; try { body = JSON.parse(raw); } catch { body = { raw }; }
   if (!r.ok) {
-    console.error(JSON.stringify({ event:"wa_send_fail", to, status:r.status, body }));
+    console.error(JSON.stringify({
+      ts:new Date().toISOString(),
+      svc:"woosh-lifts",
+      env:process.env.ENV || "dev",
+      event:"wa_send_fail",
+      to, status:r.status, body
+    }));
     throw new Error(`bridge ${r.status}`);
   }
-  console.log(JSON.stringify({ event:"wa_send_ok", to, provider_id: body.id || body.messageId || "unknown" }));
+  console.log(JSON.stringify({
+    ts:new Date().toISOString(),
+    svc:"woosh-lifts",
+    env:process.env.ENV || "dev",
+    event:"wa_send_ok",
+    to,
+    provider_id: body.id || body.messageId || "unknown",
+    ...context
+  }));
   return body;
 }
 
@@ -117,7 +132,7 @@ app.post("/sms/plain", async (req, res) => {
     };
 
     log("sms_received", { sms_id, from, text_len: text.length });
-    await sendWaText(from, `SMS received: "${text}"`);
+    await sendWaText(from, `SMS received: "${text}"`, { sms_id, text_len: text.length });
     return res.status(202).json({ ok: true, forwarded: true, sms_id });
   } catch (e) {
     console.error("[plain] error", String(e));
