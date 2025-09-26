@@ -20,9 +20,6 @@ app.use(morgan("tiny"));
 // unified latest-inbound buffer for readers/writers
 global.LAST_INBOUND = (typeof global.LAST_INBOUND !== "undefined") ? global.LAST_INBOUND : null;
 
-// unify latest-inbound buffer
-global.LAST_INBOUND = (typeof global.LAST_INBOUND !== "undefined") ? global.LAST_INBOUND : null;
-
 // ---------- registry ----------
 let REGISTRY = new Map();
 function loadRegistry() {
