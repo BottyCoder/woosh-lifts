@@ -10,12 +10,14 @@ echo "🚀 Deploying woosh-lifts to Google Cloud Run..."
 export PROJECT_ID="woosh-lifts-20250924-072759"
 export REGION="africa-south1"
 export SERVICE_NAME="woosh-lifts"
-export IMAGE_URI="$REGION-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/$SERVICE_NAME"
+# Generate version tag based on timestamp
+VERSION_TAG=$(date +%Y%m%d-%H%M%S)
+export IMAGE_URI="$REGION-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/$SERVICE_NAME:$VERSION_TAG"
 
 # Set project context
 gcloud config set project $PROJECT_ID
 
-echo "📦 Building and pushing image..."
+echo "📦 Building and pushing image with tag: $VERSION_TAG..."
 gcloud builds submit --tag "$IMAGE_URI"
 
 echo "🚀 Deploying to Cloud Run..."
