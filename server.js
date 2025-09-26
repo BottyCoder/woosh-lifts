@@ -78,13 +78,26 @@ Reply: ✅ Taking / 🆘 Need help`;
     let delivered = 0;
     for (const to of recipients) {
       try {
+        // Ensure E.164 format (digits only, no spaces/special chars)
+        const cleanTo = String(to).replace(/\D/g, "");
+        if (!cleanTo || cleanTo.length < 10) {
+          console.warn(`[forwarder] invalid recipient number: ${to}`);
+          continue;
+        }
+        
         const r = await fetch(`${BRIDGE_BASE_URL}/api/messages/send`, {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Api-Key": BRIDGE_API_KEY },
-          body: JSON.stringify({ to, text })
+          body: JSON.stringify({ to: cleanTo, text })
         });
-        if (!r.ok) console.error("[forwarder] bridge error", r.status, await r.text());
-        else delivered++;
+        
+        const responseText = await r.text();
+        if (!r.ok) {
+          console.error("[forwarder] bridge error", r.status, responseText);
+        } else {
+          console.log("[forwarder] sent to", cleanTo, "response:", responseText);
+          delivered++;
+        }
       } catch (e) {
         console.error("[forwarder] fetch error", e);
       }
@@ -99,6 +112,36 @@ Reply: ✅ Taking / 🆘 Need help`;
 app.post("/admin/registry/reload", (_req, res) => {
   loadRegistry();
   res.json({ status: "ok", size: REGISTRY.size });
+});
+
+// Admin endpoint to test WhatsApp Bridge
+app.post("/admin/ping-bridge", async (req, res) => {
+  try {
+    const { to, text } = req.body;
+    if (!to || !text) {
+      return res.status(400).json({ error: "missing to or text parameter" });
+    }
+    
+    const response = await fetch(`${BRIDGE_BASE_URL}/api/messages/send`, {
+      method: "POST",
+      headers: { 
+        "Content-Type": "application/json", 
+        "X-Api-Key": BRIDGE_API_KEY 
+      },
+      body: JSON.stringify({ to, text })
+    });
+    
+    const result = await response.json();
+    if (!response.ok) {
+      console.error("[admin] bridge error", response.status, result);
+      return res.status(500).json({ error: "bridge_error", detail: result });
+    }
+    
+    res.json({ status: "ok", bridge_response: result });
+  } catch (e) {
+    console.error("[admin] ping error", e);
+    res.status(500).json({ error: "server_error", message: e.message });
+  }
 });
 
 const port = Number(process.env.PORT) || 8080;
