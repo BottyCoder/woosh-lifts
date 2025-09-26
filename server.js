@@ -167,26 +167,47 @@ app.post(
   "/sms/plain",
   urlencoded({ extended: false }),
   json({ type: ["application/json", "application/*+json"] }),
-  (req, res) => {
-    const b = req.body || {};
+  async (req, res) => {
+    try {
+      const b = req.body || {};
 
-    // Map common provider names (incl. SMSPortal's example)
-    const message   = (b.message ?? b.text ?? b.body ?? b.incomingData ?? "").toString();
-    const from      = (b.msisdn ?? b.from ?? b.sourcePhoneNumber ?? "").toString();
-    const shortcode = (b.shortcode ?? b.short_code ?? b.to ?? b.destinationPhoneNumber ?? "").toString();
-    const id        = (b.id ?? b.messageId ?? b.message_id ?? b.incomingId ?? b.eventId ?? `evt_${Date.now()}`).toString();
+      // Map common provider names (incl. SMSPortal's example)
+      const message   = (b.message ?? b.text ?? b.body ?? b.incomingData ?? "").toString();
+      const from      = (b.msisdn ?? b.from ?? b.sourcePhoneNumber ?? "").toString();
+      const shortcode = (b.shortcode ?? b.short_code ?? b.to ?? b.destinationPhoneNumber ?? "").toString();
+      const id        = (b.id ?? b.messageId ?? b.message_id ?? b.incomingId ?? b.eventId ?? `evt_${Date.now()}`).toString();
 
-    global.LAST_INBOUND = {
-      id,
-      from,
-      shortcode,
-      message,
-      received_at: new Date().toISOString(),
-      raw: b
-    };
+      const smsEvent = {
+        id,
+        from,
+        shortcode,
+        message,
+        received_at: new Date().toISOString(),
+        raw: b
+      };
 
-    // Always 200 OK so SMSPortal's "Test" passes
-    return res.status(200).json({ status: "ok" });
+      // Store in memory for /api/inbound/latest
+      global.LAST_INBOUND = smsEvent;
+
+      // Publish to Pub/Sub for processing by router
+      const topic = pubsub.topic(SMS_INBOUND_TOPIC);
+      const messageId = await topic.publishMessage({
+        data: Buffer.from(JSON.stringify(smsEvent)),
+        attributes: {
+          id: id,
+          from: from,
+          timestamp: new Date().toISOString()
+        }
+      });
+
+      console.log("[plain] Published to Pub/Sub:", messageId);
+      
+      // Always 200 OK so SMSPortal's "Test" passes
+      return res.status(200).json({ status: "ok", published: true, message_id: messageId });
+    } catch (e) {
+      console.error("[plain] error", e);
+      return res.status(500).json({ error: "server_error" });
+    }
   }
 );
 
