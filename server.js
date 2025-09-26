@@ -3,11 +3,16 @@ const morgan  = require("morgan");
 const crypto  = require("crypto");
 const fs      = require("fs");
 const fetch   = require("node-fetch");
+const { PubSub } = require('@google-cloud/pubsub');
 
 const BRIDGE_BASE_URL = process.env.BRIDGE_BASE_URL || "https://wa.woosh.ai";
 const BRIDGE_API_KEY  = process.env.BRIDGE_API_KEY || "";
 const REGISTRY_PATH   = process.env.REGISTRY_PATH || "./data/registry.csv";
 const HMAC_SECRET     = process.env.SMSPORTAL_HMAC_SECRET || "";
+const SMS_INBOUND_TOPIC = process.env.SMS_INBOUND_TOPIC || "sms-inbound";
+
+// Initialize Pub/Sub
+const pubsub = new PubSub();
 
 const app = express();
 // no global express.json(); we need raw bytes for HMAC
@@ -63,46 +68,19 @@ app.post("/sms/inbound", express.raw({ type: "*/*" }), async (req, res) => {
     const evt = JSON.parse(raw);
     console.log("[inbound] event", evt);
 
-    const msisdn = String(evt.from || "").replace(/\D/g, "");
-    const entry = REGISTRY.get(msisdn);
-    if (!entry) {
-      console.warn(`[forwarder] no registry entry for msisdn=${msisdn}`);
-      return res.status(200).json({ status: "ok", forwarded: false, reason: "no-registry" });
-    }
-
-    const text = `[Lift Alert] ${entry.building} • ${entry.lift_id}
-Message: ${evt.message || "N/A"}
-Reply: ✅ Taking / 🆘 Need help`;
-
-    const recipients = entry.recipients.slice(0, 5);
-    let delivered = 0;
-    for (const to of recipients) {
-      try {
-        // Ensure E.164 format (digits only, no spaces/special chars)
-        const cleanTo = String(to).replace(/\D/g, "");
-        if (!cleanTo || cleanTo.length < 10) {
-          console.warn(`[forwarder] invalid recipient number: ${to}`);
-          continue;
-        }
-        
-        const r = await fetch(`${BRIDGE_BASE_URL}/api/messages/send`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Api-Key": BRIDGE_API_KEY },
-          body: JSON.stringify({ to: cleanTo, text })
-        });
-        
-        const responseText = await r.text();
-        if (!r.ok) {
-          console.error("[forwarder] bridge error", r.status, responseText);
-        } else {
-          console.log("[forwarder] sent to", cleanTo, "response:", responseText);
-          delivered++;
-        }
-      } catch (e) {
-        console.error("[forwarder] fetch error", e);
+    // Publish to Pub/Sub for processing by router
+    const topic = pubsub.topic(SMS_INBOUND_TOPIC);
+    const messageId = await topic.publishMessage({
+      data: Buffer.from(raw),
+      attributes: {
+        id: evt.id || `sms_${Date.now()}`,
+        from: evt.from || '',
+        timestamp: new Date().toISOString()
       }
-    }
-    return res.status(200).json({ status: "ok", forwarded: true, delivered, recipients });
+    });
+
+    console.log("[inbound] Published to Pub/Sub:", messageId);
+    return res.status(200).json({ status: "ok", published: true, message_id: messageId });
   } catch (e) {
     console.error("[inbound] error", e);
     return res.status(500).json({ error: "server_error" });
