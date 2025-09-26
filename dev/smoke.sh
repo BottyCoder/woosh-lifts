@@ -48,10 +48,12 @@ fi
 
 # Test 4: Admin ping bridge
 echo "🔍 Testing admin ping bridge..."
-ADMIN_RESPONSE=$(curl -fsS -X POST "$URL/admin/ping-bridge" \
+ADMIN_RESPONSE=$(curl -s -X POST "$URL/admin/ping-bridge" \
   -H "Content-Type: application/json" \
   -d '{"to":"+27824537125","text":"woosh-lifts bridge ping"}' \
   2>/dev/null || echo "FAILED")
+
+echo "   Response: $ADMIN_RESPONSE"
 
 if [[ "$ADMIN_RESPONSE" == *"status"*"ok"* ]]; then
     echo "✅ Admin ping bridge: OK"
