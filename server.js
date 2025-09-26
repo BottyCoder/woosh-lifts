@@ -13,7 +13,8 @@ function log(event, extra = {}) {
   console.log(JSON.stringify({ ts: new Date().toISOString(), env: ENV, svc: "woosh-lifts", event, ...extra }));
 }
 
-// Health check for startup probe
+// Health checks
+app.get("/", (_req, res) => res.status(200).send("ok"));
 app.get("/healthz", (_req, res) => res.status(200).send("ok"));
 
 // Optional: peek last inbound SMS
