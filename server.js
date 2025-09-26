@@ -208,8 +208,6 @@ app.post(
     };
 
     // Always 200 OK so SMSPortal's "Test" passes
-    
-    global.LAST_INBOUND = global.LAST_INBOUND || { id:"seed", from:"", shortcode:"", message:"", received_at:new Date().toISOString(), raw:{} };
     return res.status(200).json({ status: "ok" });
   }
 );
