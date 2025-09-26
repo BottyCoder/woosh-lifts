@@ -55,6 +55,14 @@ async function sendWaButtons(toE164Plus, bodyText, buttons /* [{id,title}] */) {
 app.get("/", (_req, res) => res.status(200).send("ok"));
 app.get("/healthz", (_req, res) => res.status(200).send("ok"));
 
+// Debug: last inbound SMS seen by this instance
+app.get("/api/inbound/latest", (_req, res) => {
+  if (!global.LAST_INBOUND) {
+    return res.status(404).json({ error: "no_inbound_yet" });
+  }
+  res.json(global.LAST_INBOUND);
+});
+
 app.post("/sms/plain", async (req, res) => {
   try {
     const b = req.body || {};
@@ -86,12 +94,17 @@ app.post("/sms/plain", async (req, res) => {
     }
 
     const text = String(textRaw).trim();
-    console.log(JSON.stringify({ event: "sms_received", sms_id, from, text_len: text.length }));
 
-    // send plain WhatsApp text
-    const message = `SMS received: "${text}"`;
-    await sendWaText(from, message);
+    // snapshot latest inbound for inspection endpoint
+    global.LAST_INBOUND = {
+      sms_id,
+      from,
+      text,
+      received_at: new Date().toISOString()
+    };
 
+    log("sms_received", { sms_id, from, text_len: text.length });
+    await sendWaText(from, `SMS received: "${text}"`);
     return res.status(202).json({ ok: true, forwarded: true, sms_id });
   } catch (e) {
     console.error("[plain] error", String(e));
