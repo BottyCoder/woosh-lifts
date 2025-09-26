@@ -3,7 +3,8 @@ const express = require("express");
 const fetch = require("node-fetch");
 
 const app = express();
-app.use(express.json({ limit: "256kb" }));
+app.use(express.urlencoded({ extended: true })); // ensure form-encoded works
+app.use(express.json({ limit: "256kb" }));       // ensure JSON works
 
 const ENV = process.env.ENV || "dev";
 const BRIDGE_BASE_URL = process.env.BRIDGE_BASE_URL || "https://wa.woosh.ai";
@@ -57,22 +58,44 @@ app.get("/healthz", (_req, res) => res.status(200).send("ok"));
 app.post("/sms/plain", async (req, res) => {
   try {
     const b = req.body || {};
-    const sms_id = String(b.id || "").trim();
-    const from   = String(b.phoneNumber || "").trim();
-    const text   = String(b.incomingData?.text || "").trim();
 
-    if (!sms_id || !from || !text) return res.status(400).json({ ok:false, error:"missing id/phoneNumber/incomingData.text" });
-    if (!/^\+\d{7,15}$/.test(from)) return res.status(400).json({ ok:false, error:"phoneNumber must be E.164 with +" });
+    // id can be anything unique; fall back to Date.now()
+    const sms_id = String(b.id ?? b.ID ?? b.messageId ?? b.MessageID ?? Date.now());
 
-    log("sms_received", { sms_id, from, text_len: text.length });
+    // accept multiple from fields
+    const fromRaw =
+      b.phoneNumber ?? b.msisdn ?? b.MSISDN ?? b.number ?? b.Number ?? b.from ?? b.From;
 
+    // accept multiple text fields + handle incomingData being a STRING or OBJECT
+    const incoming = b.incomingData;
+    const textRaw =
+      (typeof incoming === "string" ? incoming : incoming?.text) ??
+      b.text ?? b.message ?? b.Message ?? b["IncomingMessage"] ?? b["Incoming Message"];
+
+    if (!fromRaw || !textRaw) {
+      console.error("[plain] missing fields", JSON.stringify(b).slice(0, 500));
+      return res.status(400).json({ ok: false, error: "missing phone/text" });
+    }
+
+    // normalize number to +E.164
+    let from = String(fromRaw).trim();
+    if (!from.startsWith("+")) from = `+${from}`;
+    if (!/^\+\d{7,15}$/.test(from)) {
+      console.error("[plain] bad msisdn", from);
+      return res.status(400).json({ ok: false, error: "bad_msisdn" });
+    }
+
+    const text = String(textRaw).trim();
+    console.log(JSON.stringify({ event: "sms_received", sms_id, from, text_len: text.length }));
+
+    // send plain WhatsApp text
     const message = `SMS received: "${text}"`;
     await sendWaText(from, message);
 
-    return res.status(202).json({ ok:true, forwarded:true, sms_id });
+    return res.status(202).json({ ok: true, forwarded: true, sms_id });
   } catch (e) {
-    log("server_error", { err:String(e) });
-    return res.status(502).json({ ok:false, error:"bridge_failed" });
+    console.error("[plain] error", String(e));
+    return res.status(502).json({ ok: false, error: "bridge_failed" });
   }
 });
 
