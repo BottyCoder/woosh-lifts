@@ -54,30 +54,25 @@ async function sendWaButtons(toE164Plus, bodyText, buttons /* [{id,title}] */) {
 app.get("/", (_req, res) => res.status(200).send("ok"));
 app.get("/healthz", (_req, res) => res.status(200).send("ok"));
 
-// SMS endpoint (send buttons)
 app.post("/sms/plain", async (req, res) => {
   try {
     const b = req.body || {};
     const sms_id = String(b.id || "").trim();
-    const from = String(b.phoneNumber || "").trim();
-    const text = String(b.incomingData?.text || "").trim();
+    const from   = String(b.phoneNumber || "").trim();
+    const text   = String(b.incomingData?.text || "").trim();
 
-    if (!sms_id || !from || !text) return res.status(400).json({ ok: false, error: "missing id/phoneNumber/incomingData.text" });
-    if (!/^\+\d{7,15}$/.test(from)) return res.status(400).json({ ok: false, error: "phoneNumber must be E.164 with +" });
+    if (!sms_id || !from || !text) return res.status(400).json({ ok:false, error:"missing id/phoneNumber/incomingData.text" });
+    if (!/^\+\d{7,15}$/.test(from)) return res.status(400).json({ ok:false, error:"phoneNumber must be E.164 with +" });
 
     log("sms_received", { sms_id, from, text_len: text.length });
 
-    const bodyText = `Msg from SMS: "${text}"\nChoose an action:`;
-    const buttons = [
-      { id: "ACK_HELP", title: "Send technician" },
-      { id: "ACK_DONE", title: "All good" }
-    ];
+    const message = `SMS received: "${text}"`;
+    await sendWaText(from, message);
 
-    await sendWaButtons(from, bodyText, buttons);
-    return res.status(202).json({ ok: true, forwarded: true, sms_id });
+    return res.status(202).json({ ok:true, forwarded:true, sms_id });
   } catch (e) {
-    log("server_error", { err: String(e) });
-    return res.status(502).json({ ok: false, error: "bridge_failed" });
+    log("server_error", { err:String(e) });
+    return res.status(502).json({ ok:false, error:"bridge_failed" });
   }
 });
 
