@@ -115,7 +115,7 @@ app.post("/admin/registry/reload", (_req, res) => {
 });
 
 // Admin endpoint to test WhatsApp Bridge
-app.post("/admin/ping-bridge", async (req, res) => {
+app.post("/admin/ping-bridge", express.json(), async (req, res) => {
   try {
     const { to, text } = req.body;
     if (!to || !text) {
