@@ -113,41 +113,39 @@ app.post('/sms/direct', jsonParser, async (req, res) => {
       if (tplName) {
         // Attempt 1: send with the required single body param → "Emergency Button"
         try {
-          const components = [{ type: "body", parameters: [{ type: "text", text: "Emergency Button" }]}];
-        const r = await sendTemplateViaBridge({
-          baseUrl: BRIDGE_BASE_URL,
-          apiKey: BRIDGE_API_KEY,
-          to,
-          name: tplName,
-          languageCode: tplLang,
-          components
-        });
-        logEvent('wa_template_ok', { sms_id: smsId, to: plus(to), provider_id: r?.id || null, templateName: tplName, lang: tplLang, variant: 'with_body_param' });
-        return res.status(202).json({ ok: true, template: true, id: smsId });
-      } catch (e) {
-        const status = e?.status || null;
-        const errBody = e?.body || e?.message || String(e);
-        logEvent('wa_template_fail', { sms_id: smsId, to: plus(to), status, body: errBody, variant: 'with_body_param' });
-        // If template is parameterless, retry with NO components
-        const unsupported = status === 400 && (typeof errBody === 'object' ? errBody?.error === 'unsupported_payload' : String(errBody).includes('unsupported_payload'));
-        if (unsupported) {
-          try {
-            const r2 = await sendTemplateViaBridge({
-              baseUrl: BRIDGE_BASE_URL,
-              apiKey: BRIDGE_API_KEY,
-              to,
-              name: tplName,
-              languageCode: tplLang
-              // no components
-            });
-            logEvent('wa_template_ok', { sms_id: smsId, to: plus(to), provider_id: r2?.id || null, templateName: tplName, lang: tplLang, variant: 'no_components' });
-            return res.status(202).json({ ok: true, template: true, id: smsId });
-          } catch (e2) {
-            logEvent('wa_template_fail', { sms_id: smsId, to: plus(to), status: e2?.status || null, body: e2?.body || e2?.message || String(e2), variant: 'no_components' });
+          const r = await sendTemplateViaBridge({
+            baseUrl: BRIDGE_BASE_URL,
+            apiKey: BRIDGE_API_KEY,
+            to,
+            name: tplName,
+            language: BRIDGE_TEMPLATE_LANG,           // Bridge expects 'language'
+            bodyParams: ["Emergency Button"]          // one {{1}} param
+          });
+          logEvent('wa_template_ok', { sms_id: smsId, to: plus(to), provider_id: r?.id || null, templateName: tplName, lang: tplLang, variant: 'with_body_param' });
+          return res.status(202).json({ ok: true, template: true, id: smsId });
+        } catch (e) {
+          const status = e?.status || null;
+          const errBody = e?.body || e?.message || String(e);
+          logEvent('wa_template_fail', { sms_id: smsId, to: plus(to), status, body: errBody, variant: 'with_body_param' });
+          // If template is parameterless, retry with NO components
+          const unsupported = status === 400 && (typeof errBody === 'object' ? errBody?.error === 'unsupported_payload' : String(errBody).includes('unsupported_payload'));
+          if (unsupported) {
+            try {
+              const r2 = await sendTemplateViaBridge({
+                baseUrl: BRIDGE_BASE_URL,
+                apiKey: BRIDGE_API_KEY,
+                to,
+                name: tplName,
+                language: BRIDGE_TEMPLATE_LANG          // no bodyParams → parameterless
+              });
+              logEvent('wa_template_ok', { sms_id: smsId, to: plus(to), provider_id: r2?.id || null, templateName: tplName, lang: tplLang, variant: 'no_components' });
+              return res.status(202).json({ ok: true, template: true, id: smsId });
+            } catch (e2) {
+              logEvent('wa_template_fail', { sms_id: smsId, to: plus(to), status: e2?.status || null, body: e2?.body || e2?.message || String(e2), variant: 'no_components' });
+            }
           }
         }
       }
-    }
     // fallback → plain text
     try {
       const r2 = await sendTextViaBridge({ 
