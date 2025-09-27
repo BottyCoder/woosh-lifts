@@ -68,13 +68,62 @@ app.post("/sms/inbound", express.raw({ type: "*/*" }), async (req, res) => {
     const evt = JSON.parse(raw);
     console.log("[inbound] event", evt);
 
-    // --- Template-first insert (non-breaking) ---
-    const smsBody = evt || {};
-    const smsId   = String(smsBody.id || `sms_${Date.now()}`);
-    const toDigits = String(smsBody.from || "").replace(/[^\d]/g, "");
-    const incoming = String(smsBody.message || smsBody.text || "");
+    const b = evt || {};
 
-    console.log(JSON.stringify({ event: "sms_received_inbound", sms_id: smsId, to: toDigits, text_len: incoming.length }));
+    // helper
+    const s = v => (v === null || v === undefined) ? "" : String(v).trim();
+
+    // ID
+    const smsId =
+      s(b.id) ||
+      s(b.Id) ||
+      `sms-${Date.now()}`;
+
+    // Phone (normalize to digits for Bridge; keep pretty copy for logs)
+    const rawPhone =
+      s(b.phone) ||
+      s(b.phoneNumber) ||
+      s(b.to) ||
+      s(b.msisdn) ||
+      s(b.from);
+
+    const toDigits = rawPhone.replace(/[^\d]/g, "");
+
+    // Message text (first non-empty wins)
+    let incoming =
+      s(b.text) ||
+      s(b.incomingData) ||
+      s(b.IncomingData) ||
+      s(b.message) ||
+      s(b.body);
+
+    // Cap to 1024 for template param
+    if (incoming.length > 1024) incoming = incoming.slice(0, 1024);
+
+    // Optional metadata (pass-through for logs/analytics)
+    const meta = {
+      mcc: s(b.mcc || b.Mcc),
+      mnc: s(b.mnc || b.Mnc),
+      sc:  s(b.sc  || b.Sc  || b.shortcode),
+      keyword: s(b.keyword || b.Keyword),
+      incomingUtc: s(b.incomingUtc || b.IncomingUtc || b.incomingDateTime || b.IncomingDateTime)
+    };
+
+    // Basic validation (same error shape as before, but now tolerant)
+    if (!toDigits || !incoming) {
+      return res.status(400).json({ ok: false, error: "missing phone/text" });
+    }
+
+    // log normalized inbound once (keeps existing log style)
+    console.log(JSON.stringify({
+      event: "sms_received_inbound",
+      sms_id: smsId,
+      to: toDigits,
+      text_len: incoming.length,
+      ...meta
+    }));
+
+    // --- Template-first insert (non-breaking) ---
 
     let templateAttempted = false;
     if (BRIDGE_API_KEY && BRIDGE_TEMPLATE_NAME && toDigits && incoming) {
@@ -111,14 +160,14 @@ app.post("/sms/inbound", express.raw({ type: "*/*" }), async (req, res) => {
     const messageId = await topic.publishMessage({
       data: Buffer.from(raw),
       attributes: {
-        id: evt.id || `sms_${Date.now()}`,
-        from: evt.from || '',
+        id: smsId,
+        from: toDigits,
         timestamp: new Date().toISOString()
       }
     });
 
     console.log("[inbound] Published to Pub/Sub:", messageId);
-    console.log(JSON.stringify({ event: "wa_send_ok_inbound", sms_id: smsId, to: toDigits, text_len: incoming.length, fallback: templateAttempted }));
+    console.log(JSON.stringify({ event: "wa_send_ok_inbound", sms_id: smsId, to: toDigits, text_len: incoming.length, fallback: true }));
     return res.status(200).json({ status: "ok", published: true, message_id: messageId });
   } catch (e) {
     console.error("[inbound] error", e);
@@ -210,13 +259,59 @@ app.post(
     try {
       const b = req.body || {};
 
-      // --- Template-first insert (non-breaking) ---
-      const smsBody = req.body || {};
-      const smsId   = String(smsBody.id || smsBody.messageId || smsBody.message_id || smsBody.incomingId || smsBody.eventId || `sms-${Date.now()}`);
-      const toDigits = String(smsBody.phoneNumber || smsBody.msisdn || smsBody.from || smsBody.sourcePhoneNumber || "").replace(/[^\d]/g, "");
-      const incoming = String(smsBody.incomingData || smsBody.message || smsBody.text || smsBody.body || "");
+      // helper
+      const s = v => (v === null || v === undefined) ? "" : String(v).trim();
 
-      console.log(JSON.stringify({ event: "sms_received", sms_id: smsId, to: toDigits, text_len: incoming.length }));
+      // ID
+      const smsId =
+        s(b.id) ||
+        s(b.Id) ||
+        `sms-${Date.now()}`;
+
+      // Phone (normalize to digits for Bridge; keep pretty copy for logs)
+      const rawPhone =
+        s(b.phone) ||
+        s(b.phoneNumber) ||
+        s(b.to) ||
+        s(b.msisdn);
+
+      const toDigits = rawPhone.replace(/[^\d]/g, "");
+
+      // Message text (first non-empty wins)
+      let incoming =
+        s(b.text) ||
+        s(b.incomingData) ||
+        s(b.IncomingData) ||
+        s(b.message) ||
+        s(b.body);
+
+      // Cap to 1024 for template param
+      if (incoming.length > 1024) incoming = incoming.slice(0, 1024);
+
+      // Optional metadata (pass-through for logs/analytics)
+      const meta = {
+        mcc: s(b.mcc || b.Mcc),
+        mnc: s(b.mnc || b.Mnc),
+        sc:  s(b.sc  || b.Sc  || b.shortcode),
+        keyword: s(b.keyword || b.Keyword),
+        incomingUtc: s(b.incomingUtc || b.IncomingUtc || b.incomingDateTime || b.IncomingDateTime)
+      };
+
+      // Basic validation (same error shape as before, but now tolerant)
+      if (!toDigits || !incoming) {
+        return res.status(400).json({ ok: false, error: "missing phone/text" });
+      }
+
+      // log normalized inbound once (keeps existing log style)
+      console.log(JSON.stringify({
+        event: "sms_received",
+        sms_id: smsId,
+        to: toDigits,
+        text_len: incoming.length,
+        ...meta
+      }));
+
+      // --- Template-first insert (non-breaking) ---
 
       let templateAttempted = false;
       if (BRIDGE_API_KEY && BRIDGE_TEMPLATE_NAME && toDigits) {
@@ -248,17 +343,11 @@ app.post(
       }
       // --- End template-first insert ---
 
-      // Map common provider names (incl. SMSPortal's example)
-      const message   = (b.message ?? b.text ?? b.body ?? b.incomingData ?? "").toString();
-      const from      = (b.msisdn ?? b.from ?? b.sourcePhoneNumber ?? "").toString();
-      const shortcode = (b.shortcode ?? b.short_code ?? b.to ?? b.destinationPhoneNumber ?? "").toString();
-      const id        = (b.id ?? b.messageId ?? b.message_id ?? b.incomingId ?? b.eventId ?? `evt_${Date.now()}`).toString();
-
       const smsEvent = {
-        id,
-        from,
-        shortcode,
-        message,
+        id: smsId,
+        from: toDigits,
+        shortcode: meta.sc,
+        message: incoming,
         received_at: new Date().toISOString(),
         raw: b
       };
@@ -271,15 +360,15 @@ app.post(
       const messageId = await topic.publishMessage({
         data: Buffer.from(JSON.stringify(smsEvent)),
         attributes: {
-          id: id,
-          from: from,
+          id: smsId,
+          from: toDigits,
           timestamp: new Date().toISOString()
         }
       });
 
       console.log("[plain] Published to Pub/Sub:", messageId);
       
-      console.log(JSON.stringify({ event: "wa_send_ok", sms_id: smsId, to: toDigits, text_len: incoming.length, fallback: templateAttempted }));
+      console.log(JSON.stringify({ event: "wa_send_ok", sms_id: smsId, to: toDigits, text_len: incoming.length, fallback: true }));
       // Always 200 OK so SMSPortal's "Test" passes
       return res.status(200).json({ status: "ok", published: true, message_id: messageId });
     } catch (e) {
