@@ -76,6 +76,43 @@ function normalize(body = {}) {
   };
 }
 
+// --- Bridge template sender (raw) ---
+async function sendTemplateRaw({ to, name, langCode, paramText }) {
+  const payload = {
+    to,
+    type: "template",
+    template: {
+      name,
+      language: { code: langCode },
+      components: [
+        {
+          type: "body",
+          parameters: [{ type: "text", text: paramText }]
+        }
+      ]
+    }
+  };
+  const resp = await fetch(`${BRIDGE_BASE_URL.replace(/\/+$/,'')}/v1/send`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "authorization": `Bearer ${BRIDGE_API_KEY}`
+    },
+    body: JSON.stringify(payload),
+    timeout: 10_000
+  });
+  const text = await resp.text();
+  let body;
+  try { body = text ? JSON.parse(text) : undefined; } catch { body = text; }
+  if (!resp.ok) {
+    const err = new Error("bridge_template_error");
+    err.status = resp.status;
+    err.body = body;
+    throw err;
+  }
+  return body;
+}
+
 // readiness
 app.get('/healthz', (_, res) => res.send('ok'));
 
@@ -106,44 +143,25 @@ app.post('/sms/direct', jsonParser, async (req, res) => {
     }
     logEvent('sms_received', { sms_id: smsId, to: plus(toDigits), text_len: incoming.length, direct: true });
 
-    const tplName = process.env.BRIDGE_TEMPLATE_NAME;
-    const tplLang = process.env.BRIDGE_TEMPLATE_LANG || 'en_US';
-    const to = toDigits; // Bridge expects digits only (no '+')
+      const tplName = process.env.BRIDGE_TEMPLATE_NAME;
+      const tplLang = BRIDGE_TEMPLATE_LANG; // locked to "en" as standardized
+      const to = toDigits; // Bridge expects digits only (no '+')
 
       if (tplName) {
-        // Attempt 1: send with the required single body param → "Emergency Button"
         try {
-          const r = await sendTemplateViaBridge({
-            baseUrl: BRIDGE_BASE_URL,
-            apiKey: BRIDGE_API_KEY,
+          // Exact Bridge schema: one body var set to "Emergency Button"
+          const r = await sendTemplateRaw({
             to,
             name: tplName,
-            language: BRIDGE_TEMPLATE_LANG,           // Bridge expects 'language'
-            bodyParams: ["Emergency Button"]          // one {{1}} param
+            langCode: tplLang,            // e.g., "en"
+            paramText: "Emergency Button" // fills {{1}} in your template
           });
-          logEvent('wa_template_ok', { sms_id: smsId, to: plus(to), provider_id: r?.id || null, templateName: tplName, lang: tplLang, variant: 'with_body_param' });
+          logEvent('wa_template_ok', { sms_id: smsId, to: plus(to), provider_id: r?.id || null, templateName: tplName, lang: tplLang, variant: 'bridge_raw' });
           return res.status(202).json({ ok: true, template: true, id: smsId });
         } catch (e) {
           const status = e?.status || null;
           const errBody = e?.body || e?.message || String(e);
-          logEvent('wa_template_fail', { sms_id: smsId, to: plus(to), status, body: errBody, variant: 'with_body_param' });
-          // If template is parameterless, retry with NO components
-          const unsupported = status === 400 && (typeof errBody === 'object' ? errBody?.error === 'unsupported_payload' : String(errBody).includes('unsupported_payload'));
-          if (unsupported) {
-            try {
-              const r2 = await sendTemplateViaBridge({
-                baseUrl: BRIDGE_BASE_URL,
-                apiKey: BRIDGE_API_KEY,
-                to,
-                name: tplName,
-                language: BRIDGE_TEMPLATE_LANG          // no bodyParams → parameterless
-              });
-              logEvent('wa_template_ok', { sms_id: smsId, to: plus(to), provider_id: r2?.id || null, templateName: tplName, lang: tplLang, variant: 'no_components' });
-              return res.status(202).json({ ok: true, template: true, id: smsId });
-            } catch (e2) {
-              logEvent('wa_template_fail', { sms_id: smsId, to: plus(to), status: e2?.status || null, body: e2?.body || e2?.message || String(e2), variant: 'no_components' });
-            }
-          }
+          logEvent('wa_template_fail', { sms_id: smsId, to: plus(to), status, body: errBody, variant: 'bridge_raw' });
         }
       }
     // fallback → plain text
