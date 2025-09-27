@@ -95,8 +95,10 @@ async function sendTemplateRaw({ to, name, langCode, paramText }) {
   const resp = await fetch(`${BRIDGE_BASE_URL.replace(/\/+$/,'')}/v1/send`, {
     method: "POST",
     headers: {
-      "content-type": "application/json",
-      "authorization": `Bearer ${BRIDGE_API_KEY}`
+      // Use canonical casing and include both common auth headers.
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${BRIDGE_API_KEY}`,
+      "X-Api-Key": `${BRIDGE_API_KEY}`
     },
     body: JSON.stringify(payload),
     timeout: 10_000
