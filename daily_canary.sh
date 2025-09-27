@@ -66,10 +66,10 @@ echo "==> Verify canary produced wa_template_ok (retrying for ingestion delay)"
 FOUND="0"
 for i in {1..10}; do
   OK_COUNT="$(gcloud logging read \
-    "timestamp>=\"-5m\" AND resource.type=cloud_run_revision AND resource.labels.service_name=${SERVICE_CANARY} \
+    "resource.type=cloud_run_revision AND resource.labels.service_name=${SERVICE_CANARY} \
      AND (jsonPayload.event=\"wa_template_ok\" OR textPayload:\"wa_template_ok\") \
      AND (jsonPayload.sms_id=\"${REQ_ID}\" OR textPayload:\"${REQ_ID}\")" \
-    --limit=1 --format='value(insertId)' | wc -l | tr -d ' ')"
+    --freshness=5m --limit=1 --format='value(insertId)' | wc -l | tr -d ' ')"
   if [ "${OK_COUNT}" = "1" ]; then
     FOUND="1"
     break
@@ -82,9 +82,9 @@ if [ "${FOUND}" != "1" ]; then
   echo "!! Canary did not surface wa_template_ok in logs. NOT promoting."
   echo "==> Recent relevant canary logs (last 40 entries):"
   gcloud logging read \
-    "timestamp>=\"-10m\" AND resource.type=cloud_run_revision AND resource.labels.service_name=${SERVICE_CANARY} \
+    "resource.type=cloud_run_revision AND resource.labels.service_name=${SERVICE_CANARY} \
      AND (jsonPayload.sms_id=\"${REQ_ID}\" OR textPayload:\"${REQ_ID}\" OR jsonPayload.event=\"wa_template_fail\" OR jsonPayload.event=\"wa_send_ok\" OR jsonPayload.event=\"wa_template_ok\")" \
-    --limit=40 --format='value(jsonPayload,textPayload)'
+    --freshness=10m --limit=40 --format='value(jsonPayload,textPayload)'
   exit 2
 fi
 
