@@ -6,6 +6,10 @@ const fetch   = require("node-fetch");
 const { PubSub } = require('@google-cloud/pubsub');
 const { sendTemplateViaBridge, sendTextViaBridge } = require("./lib/bridge");
 const { query, withTxn } = require("./db");
+const { requireString, optionalString, requireEnum, patterns, createValidationError } = require("./validate");
+const { requestLogger } = require("./mw/log");
+const { errorHandler } = require("./mw/error");
+const { getPagination, paginateQuery } = require("./pagination");
 
 const BRIDGE_BASE_URL = process.env.BRIDGE_BASE_URL || "https://wa.woosh.ai";
 const BRIDGE_API_KEY  = process.env.BRIDGE_API_KEY || "";
@@ -23,6 +27,20 @@ const app = express();
 // no global express.json(); we need raw bytes for HMAC on specific routes
 const jsonParser = express.json({ limit: '128kb' });
 app.use(morgan("tiny"));
+app.use(requestLogger);
+
+// CORS for admin routes
+app.use('/admin/*', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Authorization, X-Admin-Token, Content-Type');
+  
+  if (req.method === 'OPTIONS') {
+    return res.status(204).send();
+  }
+  
+  next();
+});
 // unified latest-inbound buffer for readers/writers
 global.LAST_INBOUND = (typeof global.LAST_INBOUND !== "undefined") ? global.LAST_INBOUND : null;
 
@@ -54,10 +72,12 @@ app.get('/admin/status', async (req, res) => {
     // Check database connectivity and get counts
     let dbStatus = { db: false, lifts_count: 0, contacts_count: 0, last_event_ts: null };
     try {
-      await query('SELECT 1');
-      const liftsResult = await query('SELECT COUNT(*) as count FROM lifts');
-      const contactsResult = await query('SELECT COUNT(*) as count FROM contacts');
-      const lastEventResult = await query('SELECT MAX(ts) as last_ts FROM events');
+      // Use Promise.all for parallel queries
+      const [liftsResult, contactsResult, lastEventResult] = await Promise.all([
+        query('SELECT COUNT(*) as count FROM lifts'),
+        query('SELECT COUNT(*) as count FROM contacts'),
+        query('SELECT MAX(ts) as last_ts FROM events')
+      ]);
       
       dbStatus = {
         db: true,
@@ -69,20 +89,27 @@ app.get('/admin/status', async (req, res) => {
       console.warn('[admin/status] database check failed:', dbError.message);
     }
     
+    // Get build info
+    const build = {
+      node: process.version,
+      commit: process.env.APP_BUILD || process.env.GIT_SHA || 'unknown'
+    };
+    
     res.json({
+      ok: true,
       bridge: true,
       secrets: true,
       env: process.env.ENV || 'dev',
-      build: process.env.APP_BUILD || null,
       templateEnabled,
       templateName: process.env.BRIDGE_TEMPLATE_NAME || null,
       templateLang: process.env.BRIDGE_TEMPLATE_LANG || null,
       ...dbStatus,
+      build,
       timestamp: new Date().toISOString()
     });
   } catch (error) {
     console.error('[admin/status] error:', error);
-    res.status(500).json({ error: 'internal_error' });
+    res.status(500).json({ ok: false, error: { code: 'INTERNAL_ERROR', message: 'Internal server error' } });
   }
 });
 
@@ -384,10 +411,10 @@ app.post("/admin/ping-bridge", express.json(), async (req, res) => {
 // Lift Management
 app.post('/admin/lifts', jsonParser, async (req, res) => {
   try {
-    const { msisdn, site_name, building, notes } = req.body;
-    if (!msisdn) {
-      return res.status(400).json({ error: 'missing_msisdn' });
-    }
+    const msisdn = requireString(req.body, 'msisdn', { pattern: patterns.msisdn });
+    const site_name = optionalString(req.body, 'site_name', { max: 255 });
+    const building = optionalString(req.body, 'building', { max: 255 });
+    const notes = optionalString(req.body, 'notes', { max: 1000 });
     
     const result = await query(`
       INSERT INTO lifts (msisdn, site_name, building, notes)
@@ -397,12 +424,14 @@ app.post('/admin/lifts', jsonParser, async (req, res) => {
         building = EXCLUDED.building,
         notes = EXCLUDED.notes
       RETURNING *
-    `, [msisdn, site_name || null, building || null, notes || null]);
+    `, [msisdn, site_name, building, notes]);
     
-    res.json(result.rows[0]);
+    res.json({ ok: true, data: result.rows[0] });
   } catch (error) {
-    console.error('[admin/lifts] error:', error);
-    res.status(500).json({ error: 'internal_error' });
+    if (error.code === 'VALIDATION_ERROR') {
+      return res.status(400).json({ ok: false, error: { code: 'VALIDATION_ERROR', message: error.message } });
+    }
+    throw error;
   }
 });
 
@@ -412,22 +441,18 @@ app.get('/admin/lifts/:id', async (req, res) => {
     const result = await query('SELECT * FROM lifts WHERE id = $1', [id]);
     
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'lift_not_found' });
+      return res.status(404).json({ ok: false, error: { code: 'NOT_FOUND', message: 'Lift not found' } });
     }
     
-    res.json(result.rows[0]);
+    res.json({ ok: true, data: result.rows[0] });
   } catch (error) {
-    console.error('[admin/lifts/:id] error:', error);
-    res.status(500).json({ error: 'internal_error' });
+    throw error;
   }
 });
 
 app.get('/admin/resolve/lift', async (req, res) => {
   try {
-    const { msisdn } = req.query;
-    if (!msisdn) {
-      return res.status(400).json({ error: 'missing_msisdn' });
-    }
+    const msisdn = requireString(req.query, 'msisdn', { pattern: patterns.msisdn });
     
     // Get or create lift
     let liftResult = await query('SELECT * FROM lifts WHERE msisdn = $1', [msisdn]);
@@ -450,20 +475,32 @@ app.get('/admin/resolve/lift', async (req, res) => {
     `, [lift.id]);
     
     res.json({
-      lift,
-      contacts: contactsResult.rows,
-      created
+      ok: true,
+      data: {
+        lift,
+        contacts: contactsResult.rows,
+        created
+      }
     });
   } catch (error) {
-    console.error('[admin/resolve/lift] error:', error);
-    res.status(500).json({ error: 'internal_error' });
+    if (error.code === 'VALIDATION_ERROR') {
+      return res.status(400).json({ ok: false, error: { code: 'VALIDATION_ERROR', message: error.message } });
+    }
+    throw error;
   }
 });
 
 // Contact Management
 app.post('/admin/contacts', jsonParser, async (req, res) => {
   try {
-    const { display_name, primary_msisdn, email, role } = req.body;
+    const display_name = optionalString(req.body, 'display_name', { max: 255 });
+    const primary_msisdn = optionalString(req.body, 'primary_msisdn', { pattern: patterns.msisdn });
+    const email = optionalString(req.body, 'email', { pattern: patterns.email });
+    const role = optionalString(req.body, 'role', { max: 100 });
+    
+    if (!primary_msisdn && !email) {
+      throw createValidationError('At least one of primary_msisdn or email is required');
+    }
     
     let result;
     if (primary_msisdn) {
@@ -476,8 +513,8 @@ app.post('/admin/contacts', jsonParser, async (req, res) => {
           role = EXCLUDED.role,
           updated_at = now()
         RETURNING *
-      `, [display_name || null, primary_msisdn, email || null, role || null]);
-    } else if (email) {
+      `, [display_name, primary_msisdn, email, role]);
+    } else {
       result = await query(`
         INSERT INTO contacts (display_name, primary_msisdn, email, role)
         VALUES ($1, $2, $3, $4)
@@ -487,15 +524,15 @@ app.post('/admin/contacts', jsonParser, async (req, res) => {
           role = EXCLUDED.role,
           updated_at = now()
         RETURNING *
-      `, [display_name || null, primary_msisdn || null, email, role || null]);
-    } else {
-      return res.status(400).json({ error: 'missing_primary_msisdn_or_email' });
+      `, [display_name, primary_msisdn, email, role]);
     }
     
-    res.json(result.rows[0]);
+    res.json({ ok: true, data: result.rows[0] });
   } catch (error) {
-    console.error('[admin/contacts] error:', error);
-    res.status(500).json({ error: 'internal_error' });
+    if (error.code === 'VALIDATION_ERROR') {
+      return res.status(400).json({ ok: false, error: { code: 'VALIDATION_ERROR', message: error.message } });
+    }
+    throw error;
   }
 });
 
@@ -510,21 +547,17 @@ app.get('/admin/lifts/:id/contacts', async (req, res) => {
       ORDER BY c.display_name NULLS LAST, c.primary_msisdn
     `, [id]);
     
-    res.json(result.rows);
+    res.json({ ok: true, data: result.rows });
   } catch (error) {
-    console.error('[admin/lifts/:id/contacts] error:', error);
-    res.status(500).json({ error: 'internal_error' });
+    throw error;
   }
 });
 
 app.post('/admin/lifts/:id/contacts', jsonParser, async (req, res) => {
   try {
     const { id } = req.params;
-    const { contact_id, relation = 'tenant' } = req.body;
-    
-    if (!contact_id) {
-      return res.status(400).json({ error: 'missing_contact_id' });
-    }
+    const contact_id = requireString(req.body, 'contact_id', { pattern: patterns.uuid });
+    const relation = optionalString(req.body, 'relation', { max: 32 }) || 'tenant';
     
     await query(`
       INSERT INTO lift_contacts (lift_id, contact_id, relation)
@@ -534,8 +567,10 @@ app.post('/admin/lifts/:id/contacts', jsonParser, async (req, res) => {
     
     res.json({ ok: true });
   } catch (error) {
-    console.error('[admin/lifts/:id/contacts] error:', error);
-    res.status(500).json({ error: 'internal_error' });
+    if (error.code === 'VALIDATION_ERROR') {
+      return res.status(400).json({ ok: false, error: { code: 'VALIDATION_ERROR', message: error.message } });
+    }
+    throw error;
   }
 });
 
@@ -545,8 +580,7 @@ app.delete('/admin/lifts/:id/contacts/:contactId', async (req, res) => {
     await query('DELETE FROM lift_contacts WHERE lift_id = $1 AND contact_id = $2', [id, contactId]);
     res.json({ ok: true });
   } catch (error) {
-    console.error('[admin/lifts/:id/contacts/:contactId] error:', error);
-    res.status(500).json({ error: 'internal_error' });
+    throw error;
   }
 });
 
@@ -554,19 +588,9 @@ app.delete('/admin/lifts/:id/contacts/:contactId', async (req, res) => {
 app.post('/admin/contacts/:id/consent', jsonParser, async (req, res) => {
   try {
     const { id } = req.params;
-    const { channel, status, source } = req.body;
-    
-    if (!channel || !status) {
-      return res.status(400).json({ error: 'missing_channel_or_status' });
-    }
-    
-    if (!['sms', 'wa'].includes(channel)) {
-      return res.status(400).json({ error: 'invalid_channel' });
-    }
-    
-    if (!['opt_in', 'opt_out'].includes(status)) {
-      return res.status(400).json({ error: 'invalid_status' });
-    }
+    const channel = requireEnum(req.body, 'channel', ['sms', 'wa']);
+    const status = requireEnum(req.body, 'status', ['opt_in', 'opt_out']);
+    const source = optionalString(req.body, 'source', { max: 255 });
     
     const result = await query(`
       INSERT INTO consents (contact_id, channel, status, source)
@@ -576,12 +600,43 @@ app.post('/admin/contacts/:id/consent', jsonParser, async (req, res) => {
         source = EXCLUDED.source,
         ts = now()
       RETURNING *
-    `, [id, channel, status, source || null]);
+    `, [id, channel, status, source]);
     
-    res.json(result.rows[0]);
+    res.json({ ok: true, data: result.rows[0] });
   } catch (error) {
-    console.error('[admin/contacts/:id/consent] error:', error);
-    res.status(500).json({ error: 'internal_error' });
+    if (error.code === 'VALIDATION_ERROR') {
+      return res.status(400).json({ ok: false, error: { code: 'VALIDATION_ERROR', message: error.message } });
+    }
+    throw error;
+  }
+});
+
+// Messages endpoint with pagination
+app.get('/admin/messages', async (req, res) => {
+  try {
+    const { lift_id } = req.query;
+    const pagination = getPagination(req);
+    
+    let baseQuery = 'SELECT * FROM messages WHERE 1=1';
+    let params = [];
+    
+    if (lift_id) {
+      baseQuery += ' AND from_msisdn = (SELECT msisdn FROM lifts WHERE id = $1)';
+      params.push(lift_id);
+    }
+    
+    const result = await paginateQuery(baseQuery, params, pagination);
+    
+    res.json({
+      ok: true,
+      data: result.items,
+      pagination: {
+        next_cursor: result.next_cursor,
+        has_more: !!result.next_cursor
+      }
+    });
+  } catch (error) {
+    throw error;
   }
 });
 
@@ -643,34 +698,55 @@ app.post(
         s(b.Id) ||
         `sms-${Date.now()}`;
 
-      // Phone (normalize to digits for Bridge; keep pretty copy for logs)
-      const rawPhone =
-        s(b.phone) ||
-        s(b.phoneNumber) ||
-        s(b.to) ||
-        s(b.msisdn);
+      // Detect provider shape and normalize accordingly
+      let providerShape = 'unknown';
+      let rawPhone, incoming;
+      
+      // Provider Shape A: { "id": "op-123", "phoneNumber": "+2782...", "incomingData": "help", "provider": "..." }
+      if (b.phoneNumber && b.incomingData) {
+        providerShape = 'A';
+        rawPhone = s(b.phoneNumber);
+        incoming = s(b.incomingData);
+      }
+      // Provider Shape B: { "from": "+2782...", "text": "help", "id": "..." }
+      else if (b.from && b.text) {
+        providerShape = 'B';
+        rawPhone = s(b.from);
+        incoming = s(b.text);
+      }
+      // Fallback to existing logic
+      else {
+        rawPhone =
+          s(b.phone) ||
+          s(b.phoneNumber) ||
+          s(b.to) ||
+          s(b.msisdn);
+
+        incoming =
+          s(b.text) ||
+          s(b.incomingData) ||
+          s(b.IncomingData) ||
+          s(b.message) ||
+          s(b.body);
+      }
 
       const toDigits = rawPhone.replace(/[^\d]/g, "");
       const from_msisdn = toDigits;
 
-      // Message text (first non-empty wins)
-      let incoming =
-        s(b.text) ||
-        s(b.incomingData) ||
-        s(b.IncomingData) ||
-        s(b.message) ||
-        s(b.body);
-
       // Cap to 1024 for template param
       if (incoming.length > 1024) incoming = incoming.slice(0, 1024);
 
-      // Optional metadata (pass-through for logs/analytics)
+      // Enhanced metadata with provider shape info
       const meta = {
+        provider_shape: providerShape,
+        original_from: b.from || b.phoneNumber,
+        original_body: b.text || b.incomingData,
         mcc: s(b.mcc || b.Mcc),
         mnc: s(b.mnc || b.Mnc),
         sc:  s(b.sc  || b.Sc  || b.shortcode),
         keyword: s(b.keyword || b.Keyword),
-        incomingUtc: s(b.incomingUtc || b.IncomingUtc || b.incomingDateTime || b.IncomingDateTime)
+        incomingUtc: s(b.incomingUtc || b.IncomingUtc || b.incomingDateTime || b.IncomingDateTime),
+        provider: s(b.provider)
       };
 
       // Basic validation (same error shape as before, but now tolerant)
@@ -813,3 +889,6 @@ app.get("/api/inbound/latest", (_req, res) => {
   if (!global.LAST_INBOUND) return res.status(404).json({ error: "no_inbound_yet" });
   res.json(global.LAST_INBOUND);
 });
+
+// Error handling middleware (must be last)
+app.use(errorHandler);

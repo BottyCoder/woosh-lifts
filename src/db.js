@@ -1,14 +1,31 @@
 const { Pool } = require('pg');
 
+// Build database connection configuration
+function buildDbConfig() {
+  const config = {
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
+    application_name: 'woosh-lifts'
+  };
+  
+  // Support both TCP and UNIX socket connections
+  if (process.env.DB_SOCKET_DIR && process.env.DB_INSTANCE_CONNECTION_NAME) {
+    // UNIX socket connection (Cloud SQL)
+    config.host = `/cloudsql/${process.env.DB_INSTANCE_CONNECTION_NAME}`;
+    config.ssl = false;
+  } else {
+    // TCP connection
+    config.host = process.env.DB_HOST;
+    config.port = parseInt(process.env.DB_PORT || '5432');
+    config.ssl = process.env.DB_SSL !== 'false' ? { rejectUnauthorized: false } : false;
+  }
+  
+  return config;
+}
+
 // Database connection configuration
-const pool = new Pool({
-  host: process.env.DB_HOST,
-  port: parseInt(process.env.DB_PORT || '5432'),
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false
-});
+const pool = new Pool(buildDbConfig());
 
 // Handle pool errors
 pool.on('error', (err) => {
