@@ -110,10 +110,10 @@ app.post('/sms/direct', jsonParser, async (req, res) => {
     const tplLang = process.env.BRIDGE_TEMPLATE_LANG || 'en_US';
     const to = toDigits; // Bridge expects digits only (no '+')
 
-    if (tplName) {
-      // Attempt 1: send with a single body text param
-      try {
-        const components = [{ type: "body", parameters: [{ type: "text", text: incoming }]}];
+      if (tplName) {
+        // Attempt 1: send with the required single body param → "Emergency Button"
+        try {
+          const components = [{ type: "body", parameters: [{ type: "text", text: "Emergency Button" }]}];
         const r = await sendTemplateViaBridge({
           baseUrl: BRIDGE_BASE_URL,
           apiKey: BRIDGE_API_KEY,
