@@ -1,9 +1,10 @@
 FROM node:20-alpine
 WORKDIR /app
+# install deps (no dev)
 COPY package*.json ./
-RUN npm ci --omit=dev || npm i --omit=dev
+RUN npm ci --omit=dev || npm install --omit=dev
+# app source
 COPY . .
-RUN bash dev/guard-entry.sh
-ENV NODE_ENV=production PORT=8080
+# guard step removed — alpine doesn't ship bash and we don't need it
 EXPOSE 8080
-CMD ["node","src/server.js"]
+CMD ["node","server.js"]
