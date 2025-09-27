@@ -30,9 +30,19 @@ gcloud run deploy woosh-lifts \
   --allow-unauthenticated \
   --concurrency 20 \
   --max-instances 5 \
-  --traffic latest=100 \
   --set-env-vars ENV=prod,APP_BUILD="${IMAGE_TAG}",BRIDGE_BASE_URL=https://wa.woosh.ai,BRIDGE_TEMPLATE_NAME=growthpoint_testv1,BRIDGE_TEMPLATE_LANG=en \
   --set-secrets BRIDGE_API_KEY=BRIDGE_API_KEY:latest
+
+echo "==> Route 100% traffic to latest (retry until ready)"
+for i in {1..10}; do
+  if gcloud run services update-traffic woosh-lifts --region "${REGION}" --to-latest --quiet; then
+    echo "Traffic moved to latest."
+    break
+  else
+    echo "Latest not ready yet; retry ${i}/10..."
+    sleep 6
+  fi
+done
 
 BASE="$(gcloud run services describe woosh-lifts --region "${REGION}" --format='value(status.url)')"
 REQ_ID="smk-${STAMP}"
