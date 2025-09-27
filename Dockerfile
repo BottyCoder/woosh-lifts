@@ -7,4 +7,4 @@ RUN npm ci --omit=dev || npm install --omit=dev
 COPY . .
 # guard step removed — alpine doesn't ship bash and we don't need it
 EXPOSE 8080
-CMD ["node","server.js"]
+CMD ["node","src/server.js"]
