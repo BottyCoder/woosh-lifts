@@ -12,13 +12,13 @@ create table if not exists lifts (
 create table if not exists contacts (
   id uuid primary key default uuid_generate_v4(),
   display_name text,
-  primary_msisdn text,
+  primary_msisdn text unique,
   email text,
   role text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-create index if not exists idx_contacts_msisdn on contacts(primary_msisdn);
+-- (unique index is created implicitly by the UNIQUE constraint above)
 
 create table if not exists lift_contacts (
   lift_id uuid not null references lifts(id) on delete cascade,
