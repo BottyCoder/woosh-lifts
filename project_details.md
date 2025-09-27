@@ -1,225 +1,269 @@
-# Woosh Lifts — Project Details (Monolith, Template-First) — 2025-09-26
+## woosh-lifts — Project Details (locked & boringly stable)
 
-This document is the authoritative, current spec for the **single Cloud Run service** that turns **inbound SMS** into **WhatsApp messages** via the **Woosh WA Bridge**. It reflects everything we shipped today and what we're building next.
-
----
-
-## 1) High-level architecture (monolith)
-
-- **Service:** Cloud Run `woosh-lifts` (Gen2)
-- **Role:** Receive **POST `/sms/plain`** from SMSPortal → **send WhatsApp** to the same MSISDN.
-- **Mode:** **Template-first**, **text-fallback** (works for both cold and warm users).
-- **No Pub/Sub** workers. No router/sender services. Keep it boring; keep it reliable.
-
-### Endpoints
-- `GET /` → `200 ok` (liveness)
-- `GET /healthz` → `200 ok` (readiness)
-- `POST /sms/plain` → accepts inbound SMS JSON; sends WA (template-first); returns `202`.
-- `GET /api/inbound/latest` → last inbound snapshot (for demo/diagnostics).
-- `POST /wa/webhook` → (reserved for future button flows; currently no-op or disabled).
-- `GET /admin/status` → optional JSON status (env + template flags) if enabled.
+Last updated: **2025-09-27**  
+Region: **africa-south1**  
+GCP Project: **woosh-lifts-20250924-072759**
 
 ---
 
-## 2) WhatsApp sending behavior
+### 1) Purpose & Current Behavior
+- Accept inbound SMS from short code **43922** (provider posts to `/sms/plain`).
+- Normalize payloads (legacy + provider shapes).
+- **Template-first** send via **Woosh Bridge** (WhatsApp template), with safe **fallback** to WhatsApp text when template fails.
+- A direct test hook `/sms/direct` sends the template with a known param ("Emergency Button") to prove plumbing end-to-end.
 
-**Template-first path**
-1. If `BRIDGE_TEMPLATE_NAME` is set on the live revision, we try to send a **template**:
-   - **Template name:** `growthpoint_testv1`
-   - **Language:** `en` (must exactly match approved locale, e.g. `en` or `en_GB`)
-   - **Body variables:** exactly one `{{1}}` which we populate with the inbound SMS text.
-2. If the template call fails (bad name/lang/params or policy), we **fallback** to a **plain text** send:
-   ```
-   SMS received: "<inbound text>"
-   ```
-
-**Destination logic**
-- We **send to the same MSISDN** that sent the SMS (no contact remapping yet).
-- Input must be **E.164** with `+` (we normalize and strip `+` for the bridge).
+**Template in use**
+- Name: `growthpoint_testv1`
+- Language: **`en`** (always)
+- Body variables: **1** (`{{1}}`) → our param is **"Emergency Button"** by default.
 
 ---
 
-## 3) Contracts
+### 2) Codebase & Entrypoints
+- Runtime: **Node 20 (alpine)**
+- Primary app: `src/server.js`
+- Root shim: `server.js` (exports app; harmless if run)
+- **Dockerfile**: `CMD ["node","src/server.js"]` (directly boots the real server)
 
-### 3.1 Inbound SMS (accepted shapes)
-We accept either SMSPortal's legacy flat body **or** the normalized form:
+---
+
+### 3) Routes (public)
+#### `GET /admin/status`
+Returns non-secret status for quick checks:
 ```json
-// A) SMSPortal legacy
 {
-  "id": 3019843,
-  "phoneNumber": "27000000001",
-  "incomingData": "This is an SMS...",
-  "mcc": 655,
-  "mnc": "01",
-  "sc": "40001",
-  "keyword": "someone",
-  "incomingUtc": 1735711200
+  "bridge": true,
+  "secrets": true,
+  "env": "prod",
+  "build": "<gitsha>-<timestamp>",
+  "templateEnabled": true,
+  "templateName": "growthpoint_testv1",
+  "templateLang": "en",
+  "templateParam": "Emergency Button",
+  "timestamp": "..."
 }
 ```
-```json
-// B) Normalized (what we publish internally and echo in /api/inbound/latest)
-{
-  "sms_id": "3019843",
-  "from": "+27824537125",
-  "text": "This is an SMS...",
-  "received_at": "2025-09-26T12:08:22.895Z"
-}
-```
-Minimal required fields are: **`id`**, **`phoneNumber`**, and **`incomingData`** (string or `{ text: "..." }`).
 
-### 3.2 WhatsApp bridge (outbound)
-- **Base:** `BRIDGE_BASE_URL` (prod = `https://wa.woosh.ai`)
-- **Auth:** `X-Api-Key: $BRIDGE_API_KEY`
-- **Text send body:** `{ "to": "2782…", "text": "..." }`
-- **Template send body:**
+#### `POST /sms/plain`  *(provider webhooks)*
+- Accepts **multiple shapes** and normalizes to:
+  - `smsId` (string), `toDigits` (E.164 digits, **no +**), `incoming` (≤1024 chars)
+  - Pass-through metadata: `mcc`, `mnc`, `sc/shortcode`, `keyword`, `incomingUtc`, etc.
+- **Template-first via Bridge**, then **fallback** to WA text if template fails.
+- Structured logs:
+  - `sms_received`
+  - `wa_template_ok` / `wa_template_fail`
+  - `wa_send_ok` / `wa_send_fail` (fallback)
+
+#### `POST /sms/direct`  *(operator smoke hook)*
+- Ignores the SMS body and **always** sends the WhatsApp **template** with `{{1}} = "Emergency Button"`.
+- Uses the exact Bridge payload shape (see §5).
+- Same logs as above.
+
+#### `GET /healthz`
+- Liveness probe.
+
+---
+
+### 4) Payload Normalization (both `/sms/plain` & `/sms/inbound` if present)
+**Accepted shapes**
+- Legacy: `{"id","phone","text"}`
+- Provider: `{"id","phoneNumber","incomingData","mcc","mnc","sc","keyword","incomingUtc"}`
+- Also tolerated: `msisdn`, `to`, `from`, `message`, `body`, `IncomingData`, …
+
+**Normalized**
+- `smsId`: first non-empty from `id|Id|messageId|reqId|gen-<ts>`
+- `toDigits`: digits‐only E.164 (strip symbols), max 20
+- `incoming`: string, trimmed, max 1024 chars
+- metadata pass-through preserved
+
+---
+
+### 5) Bridge Integration (WhatsApp)
+**Endpoint:** `${BRIDGE_BASE_URL}/v1/send`  
+**Auth headers:**  
+```
+Authorization: Bearer <BRIDGE_API_KEY>
+X-Api-Key: <BRIDGE_API_KEY>
+Content-Type: application/json
+```
+
+**Template send payload (exact)**
 ```json
 {
-  "to": "2782……",
+  "to": "<digits only e.g. 27824537125>",
+  "type": "template",
   "template": {
     "name": "growthpoint_testv1",
-    "language": "en",
+    "language": { "code": "en" },
     "components": [
-      { "type": "body", "parameters": [ { "type": "text", "text": "<SMS text>" } ] }
+      { "type": "body", "parameters": [ { "type": "text", "text": "Emergency Button" } ] }
     ]
   }
 }
 ```
 
+**Fallback WA text payload**
+```json
+{ "to": "<digits>", "type": "text", "text": "SMS received: \"<incoming>\"" }
+```
+
+**Logging (JSON)**
+- `wa_template_ok` { sms_id, to, templateName, lang, provider_id?, variant }
+- `wa_template_fail` { sms_id, to, status, body, variant }
+- `wa_send_ok` { sms_id, to, provider_id?, fallback: true }
+- `wa_send_fail` { sms_id, to, status, body }
+
 ---
 
-## 4) Configuration & secrets
-
-### Plain env (config, not secrets)
+### 6) Environment & Secrets
+**Env vars (Cloud Run)**
 - `ENV=prod`
+- `APP_BUILD` — set by deploy scripts: `<gitsha>-<timestamp>`
 - `BRIDGE_BASE_URL=https://wa.woosh.ai`
 - `BRIDGE_TEMPLATE_NAME=growthpoint_testv1`
-- `BRIDGE_TEMPLATE_LANG=en`
+- `BRIDGE_TEMPLATE_LANG=en`  ← **always `en`**
+- `BRIDGE_TEMPLATE_PARAM="Emergency Button"` *(optional, defaults to "Emergency Button"; used by `/sms/direct`)*
 
-### Secret Manager (required)
-- `BRIDGE_API_KEY:latest` — bridge auth key
-- `SMSPORTAL_HMAC_SECRET:latest` — reserved for future signature verification (optional today)
-
-> **Why env for template settings?** They're not secrets; keeping them as env vars simplifies ops. We can move to secrets later if policy requires.
+**Secrets**
+- `BRIDGE_API_KEY` from Secret Manager (version: `latest`)
 
 ---
 
-## 5) Logging & observability
+### 7) Build & Deploy
+#### Daily (prod) — single command
+```bash
+gcloud config set project woosh-lifts-20250924-072759
+cd ~/woosh-lifts && git pull --rebase origin main
+bash --noprofile --norc ./daily.sh
+```
+**What it does**
+1) Stash untracked, fast-forward to `origin/main`  
+2) Build image: `africa-south1-docker.pkg.dev/<project>/app/woosh-lifts:<gitsha>-<timestamp>`  
+3) Deploy to **woosh-lifts** with env+secret  
+4) Route **100% traffic to latest** (with retries)  
+5) Smoke:
+   - `/sms/direct` (known-good template path)
+   - `/sms/plain` (provider shape, uses template-first)  
+6) Print decisive logs for request ids
 
-Structured JSON logs (single-line):
-- `sms_received { sms_id, from, text_len }`
-- `wa_template_ok { to, provider_id, templateName, lang, sms_id, text_len }`
-- `wa_template_fail { to, status, body, templateName, lang, sms_id }`
-- `wa_send_ok { to, provider_id, sms_id, text_len }`
-- `wa_send_fail { to, status, body, sms_id }`
+#### Canary → Promote (safe by default)
+File: `daily_canary.sh`  
+Run:
+```bash
+gcloud config set project woosh-lifts-20250924-072759
+cd ~/woosh-lifts && git pull --rebase origin main
+bash --noprofile --norc ./daily_canary.sh
+```
+**Flow**
+1) Build once  
+2) Deploy to **woosh-lifts-canary** (separate service)  
+3) Smoke `/sms/direct` on canary  
+4) **Wait for `wa_template_ok`** in logs (retry + `--freshness`)  
+5) **Only if OK** → deploy the **same image** to prod and route 100% traffic to latest  
+6) Print status + logs
 
-Useful queries:
+**Rollback (pin to known good)**
+```bash
+REGION=africa-south1
+GOOD=$(gcloud run revisions list --service woosh-lifts --region "$REGION" --format='value(name)' | head -n 1)
+gcloud run services update-traffic woosh-lifts --region "$REGION" --to-revisions "${GOOD}=100"
+```
+
+---
+
+### 8) Provider Webhook (production)
+Point inbound to:
+```
+https://woosh-lifts-737216569971.africa-south1.run.app/sms/plain
+```
+*(The daily/canary scripts always print the current service URL.)*
+
+---
+
+### 9) Operator Smokes (handy one-liners)
+**Status**
+```bash
++BASE=$(gcloud run services describe woosh-lifts --region africa-south1 --format='value(status.url)')
+curl -sS "$BASE/admin/status" | jq
+```
+
+**Direct template (to +27824537125)**
+```bash
+ID=tpl-$(date +%H%M%S)
+( set +o histexpand; curl -iS -X POST "$BASE/sms/direct" \
+  -H 'Content-Type: application/json' \
+  --data-raw "{\"id\":\"$ID\",\"phoneNumber\":\"+27824537125\",\"incomingData\":\"ignored\"}"; )
+gcloud logging read \
+  "resource.type=cloud_run_revision AND resource.labels.service_name=woosh-lifts AND (jsonPayload.sms_id=\"$ID\" OR textPayload:\"$ID\")" \
+  --freshness=10m --limit=50 --format='value(jsonPayload,textPayload)'
+```
+
+**Provider-shape smoke against `/sms/plain`**
+```bash
+ID=smk-$(date +%H%M%S)
+( set +o histexpand; curl -iS -X POST "$BASE/sms/plain" \
+  -H 'Content-Type: application/json' \
+  --data-raw "{\"id\":\"$ID\",\"phoneNumber\":\"+27824537125\",\"incomingData\":\"Emergency Button\"}"; )
+gcloud logging read \
+  "resource.type=cloud_run_revision AND resource.labels.service_name=woosh-lifts AND (jsonPayload.sms_id=\"$ID\" OR textPayload:\"$ID\")" \
+  --freshness=10m --limit=50 --format='value(jsonPayload,textPayload)'
+```
+
+---
+
+### 10) Troubleshooting Cheatsheet
+1) **Service URL**
+```bash
+gcloud run services describe woosh-lifts --region africa-south1 --format='value(status.url)'
+```
+2) **Latest revision + image + env**
+```bash
+gcloud run services describe woosh-lifts --region africa-south1 \
+  --format='value(status.latestReadyRevisionName,spec.template.spec.containers[0].image,spec.template.spec.containers[0].env)'
+```
+3) **Startup / recent event logs**
 ```bash
 gcloud logging read \
-'resource.type="cloud_run_revision" AND resource.labels.service_name="woosh-lifts"
- AND (textPayload:"wa_template_ok" OR textPayload:"wa_template_fail" OR textPayload:"wa_send_ok" OR textPayload:"wa_send_fail")' \
---limit=20 --format='value(textPayload)'
+  'resource.type=cloud_run_revision AND resource.labels.service_name="woosh-lifts"' \
+  --freshness=10m --limit=50 --format='value(textPayload,jsonPayload)'
 ```
+4) **Template failures (last 10m)**
 ```bash
 gcloud logging read \
-'resource.type="cloud_run_revision" AND resource.labels.service_name="woosh-lifts"
- AND httpRequest.requestUrl:"/sms/plain"' \
---limit=20 \
---format='value(httpRequest.status, httpRequest.requestMethod, httpRequest.requestUrl, receiveTimestamp)'
+  'resource.type=cloud_run_revision AND resource.labels.service_name="woosh-lifts" AND jsonPayload.event="wa_template_fail"' \
+  --freshness=10m --limit=50 --format='value(jsonPayload)'
 ```
-
----
-
-## 6) Deploy & smoke (immutability-safe)
-
-**Pull/build/deploy**
+5) **Secret sanity**
 ```bash
-cd ~/woosh-lifts
-git fetch origin
-git checkout main
-git pull --ff-only origin main
-
-export REGION="africa-south1"
-export PROJECT_ID=$(gcloud config get-value core/project)
-export IMAGE_TAG="$(git rev-parse --short HEAD)-monolith-$(date +%Y%m%d-%H%M%S)"
-export IMAGE_URI="$REGION-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/woosh-lifts:${IMAGE_TAG}"
-
-gcloud builds submit . --tag "$IMAGE_URI"
-
-gcloud run deploy woosh-lifts \
-  --image "$IMAGE_URI" \
-  --region "$REGION" \
-  --allow-unauthenticated \
-  --set-env-vars ENV=prod,BRIDGE_BASE_URL=https://wa.woosh.ai,BRIDGE_TEMPLATE_NAME=growthpoint_testv1,BRIDGE_TEMPLATE_LANG=en \
-  --set-secrets BRIDGE_API_KEY=BRIDGE_API_KEY:latest,SMSPORTAL_HMAC_SECRET=SMSPORTAL_HMAC_SECRET:latest
-```
-
-**Smokes**
-```bash
-# Get URL
-BASE=$(gcloud run services describe woosh-lifts --region "$REGION" --format='value(status.url)')
-
-# Liveness
-curl -iS "$BASE/"
-curl -iS "$BASE/healthz"
-
-# E2E (use a real WA-enabled number)
-curl -iS -X POST "$BASE/sms/plain" -H "Content-Type: application/json" \
-  --data-raw '{"id":"demo-tpl-101","phoneNumber":"+27824537125","incomingData":"Template path test - hello!"}'
-
-# Confirm path taken
-gcloud logging read \
-'resource.type="cloud_run_revision" AND resource.labels.service_name="woosh-lifts"
- AND (textPayload:"wa_template_ok" OR textPayload:"wa_template_fail" OR textPayload:"wa_send_ok" OR textPayload:"wa_send_fail")' \
---limit=20 --format='value(textPayload)'
-
-# Last inbound snapshot
-curl -s "$BASE/api/inbound/latest"
+gcloud secrets versions access latest --secret=BRIDGE_API_KEY >/dev/null && echo "BRIDGE_API_KEY OK"
 ```
 
 ---
 
-## 7) Error handling & common pitfalls
-
-- **400 `bad_msisdn`** → input wasn't valid E.164 (`+` and digits only). Replace dummy like `+27XXXXXXXXX` with a real number.
-- **No `wa_template_*` logs** → template env not set on the live revision, or deployed image lacks template code; redeploy with envs.
-- **Template fails but text arrives** → expected; fallback working (fix name/locale later).
-- **No WA on dummy numbers** → WhatsApp must be active on the destination MSISDN.
-
----
-
-## 8) Security & ops notes
-
-- **Auth for webhook**: header with shared secret is ready to add; currently open for speed. When you want it, we'll enforce `X-SMS-Signature`.
-- **Idempotency**: we can cache recent `sms_id` for 24h (in-mem or Firestore) to drop dupes; currently not enforced (kept simple).
-- **Rate limits**: bridge retries/backoff are handled inside; upstream rate limiting can be added later if traffic ramps.
-- **Rollback**:
-  ```bash
-  gcloud run services describe woosh-lifts --region "$REGION" \
-    --format='value(status.traffic[].revisionName,status.traffic[].percent)'
-  gcloud run services update-traffic woosh-lifts --region "$REGION" --to-revisions <REV>=100
-  ```
+### 11) What's locked down (do not change casually)
+- **Entrypoint**: Docker `CMD ["node","src/server.js"]`  
+- **Template language**: **`en`** everywhere  
+- **Bridge schema**: wrapped `type:"template"` with `template.language.code` and `template.components[].parameters[]`  
+- **Auth headers**: **both** `Authorization: Bearer <key>` and `X-Api-Key: <key>`  
+- **Daily/Canary flow**: use provided scripts; they set account/project/region, flip traffic safely, and smoke with log verification.
 
 ---
 
-## 9) What's working now
-
-- `/sms/plain` → **WhatsApp** delivery (template for cold users; text for warm/fallback).
-- `/api/inbound/latest` → shows last SMS snapshot.
-- Structured logs for **sms_received**, **wa_template_ok/fail**, **wa_send_ok/fail**.
-- Clean immutable deploys with one-liner smokes.
-
----
-
-## 10) Next up (small, safe enhancements)
-
-1) **Webhook auth**: require `X-SMS-Signature` or a pre-shared header; reject if missing/invalid.
-2) **Idempotency**: 24h duplicate guard by `sms_id` (in-mem LRU or Firestore TTL).
-3) **Admin status**: `/admin/status` (env + build SHA) for client demos.
-4) **Routing rules (optional)**: map certain short codes/keywords → different WA recipients.
-5) **Button flow (later)**: re-enable `/wa/webhook` to confirm actions via buttons once the demo stabilizes.
+### 12) Changelog (recent)
+- **Template-first plumbing (plain + direct)**  
+- **Payload normalization** across providers  
+- **Bridge schema fix** (`template.language.code`, `components[].parameters[]`)  
+- **Auth header fix** (Bearer + X-Api-Key)  
+- **Entrypoint fix** (boot `src/server.js`)  
+- **/admin/status** enriched (build, lang, param)  
+- **daily.sh** hardened (traffic flip + smokes + logs)  
+- **daily_canary.sh** added (non-destructive build→prove→promote; log-lag tolerant)
 
 ---
 
-**Owner:** Marc @ Woosh  
-**Environment:** `africa-south1` / Project `woosh-lifts-20250924-072759`  
-**Bridge:** `https://wa.woosh.ai` (via `BRIDGE_API_KEY`)
+### 13) Quick "Runbook" (human)
+1) **Check status:** `/admin/status`  
+2) **Direct template smoke:** `/sms/direct` to your number  
+3) **If red:** read `wa_template_fail` body+status → fix env or payload  
+4) **If deploy risk:** run **canary** script; only promote on `wa_template_ok`  
+5) **Rollback:** update traffic to known good revision (see §7)
