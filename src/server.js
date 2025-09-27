@@ -18,7 +18,8 @@ const SMS_INBOUND_TOPIC = process.env.SMS_INBOUND_TOPIC || "sms-inbound";
 const pubsub = new PubSub();
 
 const app = express();
-// no global express.json(); we need raw bytes for HMAC
+// no global express.json(); we need raw bytes for HMAC on specific routes
+const jsonParser = express.json({ limit: '128kb' });
 app.use(morgan("tiny"));
 // unified latest-inbound buffer for readers/writers
 global.LAST_INBOUND = (typeof global.LAST_INBOUND !== "undefined") ? global.LAST_INBOUND : null;
@@ -96,7 +97,7 @@ app.get('/__debug', (req, res) => {
 });
 
 // DIRECT route: template-first, no forwarding
-app.post('/sms/direct', async (req, res) => {
+app.post('/sms/direct', jsonParser, async (req, res) => {
   try {
     const { smsId, toDigits, incoming } = normalize(req.body || {});
     if (!toDigits || !incoming) {

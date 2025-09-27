@@ -30,6 +30,7 @@ gcloud run deploy woosh-lifts \
   --allow-unauthenticated \
   --concurrency 20 \
   --max-instances 5 \
+  --traffic latest=100 \
   --set-env-vars ENV=prod,APP_BUILD="${IMAGE_TAG}",BRIDGE_BASE_URL=https://wa.woosh.ai,BRIDGE_TEMPLATE_NAME=growthpoint_testv1,BRIDGE_TEMPLATE_LANG=en_US \
   --set-secrets BRIDGE_API_KEY=BRIDGE_API_KEY:latest
 
