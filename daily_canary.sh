@@ -35,6 +35,10 @@ IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/app/woosh-lifts:${IMAGE_TAG}"
 echo "==> Build: ${IMAGE_URI}"
 gcloud builds submit . --tag "${IMAGE_URI}"
 
+echo "==> Run migrations"
+npm ci || npm install
+npm run migrate
+
 echo "==> Deploy to CANARY: ${SERVICE_CANARY}"
 gcloud run deploy "${SERVICE_CANARY}" \
   --image "${IMAGE_URI}" \

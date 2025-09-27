@@ -23,6 +23,10 @@ IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/app/woosh-lifts:${IMAGE_TAG}"
 echo "==> Build: ${IMAGE_URI}"
 gcloud builds submit . --tag "${IMAGE_URI}"
 
+echo "==> Run migrations"
+npm ci || npm install
+npm run migrate
+
 echo "==> Deploy: Cloud Run (woosh-lifts)"
 gcloud run deploy woosh-lifts \
   --image "${IMAGE_URI}" \

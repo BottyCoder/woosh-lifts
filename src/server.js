@@ -5,6 +5,7 @@ const fs      = require("fs");
 const fetch   = require("node-fetch");
 const { PubSub } = require('@google-cloud/pubsub');
 const { sendTemplateViaBridge, sendTextViaBridge } = require("./lib/bridge");
+const { query, withTxn } = require("./db");
 
 const BRIDGE_BASE_URL = process.env.BRIDGE_BASE_URL || "https://wa.woosh.ai";
 const BRIDGE_API_KEY  = process.env.BRIDGE_API_KEY || "";
@@ -46,18 +47,43 @@ loadRegistry();
 app.get("/", (_req, res) => res.status(200).send("woosh-lifts: ok"));
 
 // Admin status (enriched, no secrets)
-app.get('/admin/status', (req, res) => {
-  const templateEnabled = Boolean(process.env.BRIDGE_TEMPLATE_NAME && process.env.BRIDGE_TEMPLATE_LANG);
-  res.json({
-    bridge: true,
-    secrets: true,
-    env: process.env.ENV || 'dev',
-    build: process.env.APP_BUILD || null,
-    templateEnabled,
-    templateName: process.env.BRIDGE_TEMPLATE_NAME || null,
-    templateLang: process.env.BRIDGE_TEMPLATE_LANG || null,
-    timestamp: new Date().toISOString()
-  });
+app.get('/admin/status', async (req, res) => {
+  try {
+    const templateEnabled = Boolean(process.env.BRIDGE_TEMPLATE_NAME && process.env.BRIDGE_TEMPLATE_LANG);
+    
+    // Check database connectivity and get counts
+    let dbStatus = { db: false, lifts_count: 0, contacts_count: 0, last_event_ts: null };
+    try {
+      await query('SELECT 1');
+      const liftsResult = await query('SELECT COUNT(*) as count FROM lifts');
+      const contactsResult = await query('SELECT COUNT(*) as count FROM contacts');
+      const lastEventResult = await query('SELECT MAX(ts) as last_ts FROM events');
+      
+      dbStatus = {
+        db: true,
+        lifts_count: parseInt(liftsResult.rows[0].count),
+        contacts_count: parseInt(contactsResult.rows[0].count),
+        last_event_ts: lastEventResult.rows[0].last_ts
+      };
+    } catch (dbError) {
+      console.warn('[admin/status] database check failed:', dbError.message);
+    }
+    
+    res.json({
+      bridge: true,
+      secrets: true,
+      env: process.env.ENV || 'dev',
+      build: process.env.APP_BUILD || null,
+      templateEnabled,
+      templateName: process.env.BRIDGE_TEMPLATE_NAME || null,
+      templateLang: process.env.BRIDGE_TEMPLATE_LANG || null,
+      ...dbStatus,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('[admin/status] error:', error);
+    res.status(500).json({ error: 'internal_error' });
+  }
 });
 
 // tiny helpers kept local to avoid dependency gaps
@@ -353,6 +379,212 @@ app.post("/admin/ping-bridge", express.json(), async (req, res) => {
   }
 });
 
+// ========== ADMIN API ENDPOINTS ==========
+
+// Lift Management
+app.post('/admin/lifts', jsonParser, async (req, res) => {
+  try {
+    const { msisdn, site_name, building, notes } = req.body;
+    if (!msisdn) {
+      return res.status(400).json({ error: 'missing_msisdn' });
+    }
+    
+    const result = await query(`
+      INSERT INTO lifts (msisdn, site_name, building, notes)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (msisdn) DO UPDATE SET
+        site_name = EXCLUDED.site_name,
+        building = EXCLUDED.building,
+        notes = EXCLUDED.notes
+      RETURNING *
+    `, [msisdn, site_name || null, building || null, notes || null]);
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('[admin/lifts] error:', error);
+    res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+app.get('/admin/lifts/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await query('SELECT * FROM lifts WHERE id = $1', [id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'lift_not_found' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('[admin/lifts/:id] error:', error);
+    res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+app.get('/admin/resolve/lift', async (req, res) => {
+  try {
+    const { msisdn } = req.query;
+    if (!msisdn) {
+      return res.status(400).json({ error: 'missing_msisdn' });
+    }
+    
+    // Get or create lift
+    let liftResult = await query('SELECT * FROM lifts WHERE msisdn = $1', [msisdn]);
+    let created = false;
+    
+    if (liftResult.rows.length === 0) {
+      liftResult = await query('INSERT INTO lifts (msisdn) VALUES ($1) RETURNING *', [msisdn]);
+      created = true;
+    }
+    
+    const lift = liftResult.rows[0];
+    
+    // Get linked contacts
+    const contactsResult = await query(`
+      SELECT c.id, c.display_name, c.primary_msisdn, c.email, c.role, lc.relation
+      FROM contacts c
+      JOIN lift_contacts lc ON lc.contact_id = c.id
+      WHERE lc.lift_id = $1
+      ORDER BY c.display_name NULLS LAST, c.primary_msisdn
+    `, [lift.id]);
+    
+    res.json({
+      lift,
+      contacts: contactsResult.rows,
+      created
+    });
+  } catch (error) {
+    console.error('[admin/resolve/lift] error:', error);
+    res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+// Contact Management
+app.post('/admin/contacts', jsonParser, async (req, res) => {
+  try {
+    const { display_name, primary_msisdn, email, role } = req.body;
+    
+    let result;
+    if (primary_msisdn) {
+      result = await query(`
+        INSERT INTO contacts (display_name, primary_msisdn, email, role)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (primary_msisdn) DO UPDATE SET
+          display_name = EXCLUDED.display_name,
+          email = EXCLUDED.email,
+          role = EXCLUDED.role,
+          updated_at = now()
+        RETURNING *
+      `, [display_name || null, primary_msisdn, email || null, role || null]);
+    } else if (email) {
+      result = await query(`
+        INSERT INTO contacts (display_name, primary_msisdn, email, role)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (email) DO UPDATE SET
+          display_name = EXCLUDED.display_name,
+          primary_msisdn = EXCLUDED.primary_msisdn,
+          role = EXCLUDED.role,
+          updated_at = now()
+        RETURNING *
+      `, [display_name || null, primary_msisdn || null, email, role || null]);
+    } else {
+      return res.status(400).json({ error: 'missing_primary_msisdn_or_email' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('[admin/contacts] error:', error);
+    res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+app.get('/admin/lifts/:id/contacts', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await query(`
+      SELECT c.id, c.display_name, c.primary_msisdn, c.email, c.role, lc.relation
+      FROM contacts c
+      JOIN lift_contacts lc ON lc.contact_id = c.id
+      WHERE lc.lift_id = $1
+      ORDER BY c.display_name NULLS LAST, c.primary_msisdn
+    `, [id]);
+    
+    res.json(result.rows);
+  } catch (error) {
+    console.error('[admin/lifts/:id/contacts] error:', error);
+    res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+app.post('/admin/lifts/:id/contacts', jsonParser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { contact_id, relation = 'tenant' } = req.body;
+    
+    if (!contact_id) {
+      return res.status(400).json({ error: 'missing_contact_id' });
+    }
+    
+    await query(`
+      INSERT INTO lift_contacts (lift_id, contact_id, relation)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (lift_id, contact_id) DO NOTHING
+    `, [id, contact_id, relation]);
+    
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('[admin/lifts/:id/contacts] error:', error);
+    res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+app.delete('/admin/lifts/:id/contacts/:contactId', async (req, res) => {
+  try {
+    const { id, contactId } = req.params;
+    await query('DELETE FROM lift_contacts WHERE lift_id = $1 AND contact_id = $2', [id, contactId]);
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('[admin/lifts/:id/contacts/:contactId] error:', error);
+    res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+// Consent Management
+app.post('/admin/contacts/:id/consent', jsonParser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { channel, status, source } = req.body;
+    
+    if (!channel || !status) {
+      return res.status(400).json({ error: 'missing_channel_or_status' });
+    }
+    
+    if (!['sms', 'wa'].includes(channel)) {
+      return res.status(400).json({ error: 'invalid_channel' });
+    }
+    
+    if (!['opt_in', 'opt_out'].includes(status)) {
+      return res.status(400).json({ error: 'invalid_status' });
+    }
+    
+    const result = await query(`
+      INSERT INTO consents (contact_id, channel, status, source)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (contact_id, channel) DO UPDATE SET
+        status = EXCLUDED.status,
+        source = EXCLUDED.source,
+        ts = now()
+      RETURNING *
+    `, [id, channel, status, source || null]);
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('[admin/contacts/:id/consent] error:', error);
+    res.status(500).json({ error: 'internal_error' });
+  }
+});
+
 // Export app for use by root server.js
 module.exports = app;
 
@@ -419,6 +651,7 @@ app.post(
         s(b.msisdn);
 
       const toDigits = rawPhone.replace(/[^\d]/g, "");
+      const from_msisdn = toDigits;
 
       // Message text (first non-empty wins)
       let incoming =
@@ -444,6 +677,42 @@ app.post(
       if (!toDigits || !incoming) {
         return res.status(400).json({ ok: false, error: "missing phone/text" });
       }
+
+      // ========== DATABASE INTEGRATION ==========
+      
+      // Resolve lift (auto-create if missing)
+      let liftResult = await query('SELECT id FROM lifts WHERE msisdn = $1', [from_msisdn]);
+      let lift_id, lift_created = false;
+      
+      if (liftResult.rows.length === 0) {
+        liftResult = await query('INSERT INTO lifts (msisdn) VALUES ($1) RETURNING id', [from_msisdn]);
+        lift_created = true;
+      }
+      lift_id = liftResult.rows[0].id;
+
+      // Insert inbound message
+      const messageResult = await query(`
+        INSERT INTO messages (channel, provider_id, direction, from_msisdn, to_msisdn, body, meta)
+        VALUES ('sms', $1, 'in', $2, $3, $4, $5)
+        RETURNING id
+      `, [smsId, from_msisdn, meta.sc || null, incoming, JSON.stringify(meta)]);
+
+      // Emit events
+      await query(`
+        INSERT INTO events (type, payload, ts)
+        VALUES ('sms_received', $1, now())
+      `, [JSON.stringify({ from_msisdn, provider_id: smsId })]);
+
+      await query(`
+        INSERT INTO events (lift_id, type, payload, ts)
+        VALUES ($1, 'lift_resolved', $2, now())
+      `, [lift_id, JSON.stringify({ lift_msisdn: from_msisdn, created: lift_created })]);
+
+      // Get contacts count for response
+      const contactsResult = await query(`
+        SELECT COUNT(*) as count FROM lift_contacts WHERE lift_id = $1
+      `, [lift_id]);
+      const contacts_count = parseInt(contactsResult.rows[0].count);
 
       // log normalized inbound once (keeps existing log style)
       console.log(JSON.stringify({
@@ -471,7 +740,17 @@ app.post(
           });
           const wa_id = graph?.messages?.[0]?.id || null;
           console.log(JSON.stringify({ event: "wa_template_ok", sms_id: smsId, to: toDigits, templateName: BRIDGE_TEMPLATE_NAME, lang: BRIDGE_TEMPLATE_LANG, wa_id, text_len: incoming.length }));
-          return res.status(202).json({ ok: true, forwarded: true, sms_id: smsId, type: "template" });
+          
+          // Return with database info
+          return res.status(200).json({ 
+            ok: true, 
+            forwarded: true, 
+            sms_id: smsId, 
+            type: "template",
+            lift_id,
+            msisdn: from_msisdn,
+            contacts_count
+          });
         } catch (e) {
           console.log(JSON.stringify({
             event: "wa_template_fail",
@@ -512,8 +791,16 @@ app.post(
       console.log("[plain] Published to Pub/Sub:", messageId);
       
       console.log(JSON.stringify({ event: "wa_send_ok", sms_id: smsId, to: toDigits, text_len: incoming.length, fallback: true }));
-      // Always 200 OK so SMSPortal's "Test" passes
-      return res.status(200).json({ status: "ok", published: true, message_id: messageId });
+      
+      // Return with database info
+      return res.status(200).json({ 
+        ok: true, 
+        published: true, 
+        message_id: messageId,
+        lift_id,
+        msisdn: from_msisdn,
+        contacts_count
+      });
     } catch (e) {
       console.error("[plain] error", e);
       return res.status(500).json({ error: "server_error" });

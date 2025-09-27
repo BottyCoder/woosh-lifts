@@ -8,10 +8,12 @@
     "morgan": "^1.10.0",
     "node-fetch": "^2.7.0",
     "@google-cloud/pubsub": "^4.1.0",
-    "@google-cloud/firestore": "^7.1.0"
+    "@google-cloud/firestore": "^7.1.0",
+    "pg": "^8.11.3"
   },
   "scripts": {
     "start": "node server.js",
+    "migrate": "node scripts/migrate.js",
     "postinstall": "echo 'ready \ud83d\ude80'"
   },
   "main": "server.js"
