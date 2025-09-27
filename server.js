@@ -20,6 +20,7 @@ app.get('/admin/status', (req, res) => {
     bridge: true,
     secrets: true,
     env: process.env.ENV || 'dev',
+    build: process.env.APP_BUILD || null,
     templateEnabled,
     templateName: process.env.BRIDGE_TEMPLATE_NAME || null,
     templateLang: process.env.BRIDGE_TEMPLATE_LANG || null,

@@ -30,16 +30,16 @@ gcloud run deploy woosh-lifts \
   --allow-unauthenticated \
   --concurrency 20 \
   --max-instances 5 \
-  --set-env-vars ENV=prod,BRIDGE_BASE_URL=https://wa.woosh.ai,BRIDGE_TEMPLATE_NAME=growthpoint_testv1,BRIDGE_TEMPLATE_LANG=en_US \
+  --set-env-vars ENV=prod,APP_BUILD="${IMAGE_TAG}",BRIDGE_BASE_URL=https://wa.woosh.ai,BRIDGE_TEMPLATE_NAME=growthpoint_testv1,BRIDGE_TEMPLATE_LANG=en_US \
   --set-secrets BRIDGE_API_KEY=BRIDGE_API_KEY:latest
 
 BASE="$(gcloud run services describe woosh-lifts --region "${REGION}" --format='value(status.url)')"
 REQ_ID="smk-${STAMP}"
 DEST="+27824537125"
 
-echo "==> Smoke: POST ${BASE}/sms/plain id=${REQ_ID}"
-curl -iS -X POST "${BASE}/sms/plain" -H "Content-Type: application/json" \
-  --data-raw "{\"id\":\"${REQ_ID}\",\"phoneNumber\":\"${DEST}\",\"incomingData\":\"Daily smoke – template path test.\"}"
+echo "==> Smoke: POST ${BASE}/sms/direct id=${REQ_ID}"
+( set +o histexpand; curl -iS -X POST "${BASE}/sms/direct" -H "Content-Type: application/json" \
+  --data-raw "{\"id\":\"${REQ_ID}\",\"phoneNumber\":\"${DEST}\",\"incomingData\":\"Daily smoke – template path test.\"}"; )
 
 echo "==> Logs for ${REQ_ID}"
 gcloud logging read \
