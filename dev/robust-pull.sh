@@ -1,13 +1,10 @@
 #!/bin/bash
 set -e
 
-# Make script executable if not already
-chmod +x "$0" 2>/dev/null || true
-
-# Robust Git Pull Script for GCP Cloud Shell
+# Robust Git Pull Script for woosh-lifts
 # This script ensures you get the latest changes and provides detailed feedback
 
-echo "🔄 Starting robust git pull process on GCP Cloud Shell..."
+echo "🔄 Starting robust git pull process..."
 
 # Check if we're in a git repository
 if ! git rev-parse --git-dir > /dev/null 2>&1; then
@@ -36,9 +33,9 @@ if ! git diff-index --quiet HEAD --; then
     fi
 fi
 
-# Fetch latest changes from remote with verbose output
+# Fetch latest changes from remote
 echo "🌐 Fetching latest changes from remote..."
-git fetch origin --all --prune --verbose
+git fetch origin --all --prune
 
 # Check if remote branch exists
 if ! git show-ref --verify --quiet refs/remotes/origin/$CURRENT_BRANCH; then
@@ -66,11 +63,8 @@ else
     echo "📋 New commits since last pull:"
     git log --oneline $LOCAL_COMMIT..origin/$CURRENT_BRANCH
     
-    # Perform the pull with verbose output
-    echo "🔄 Executing git pull with verbose output..."
-    git pull origin $CURRENT_BRANCH --verbose
-    
-    if [ $? -eq 0 ]; then
+    # Perform the pull
+    if git pull origin $CURRENT_BRANCH; then
         echo "✅ Successfully pulled latest changes"
         
         # Show updated files
@@ -108,12 +102,4 @@ git status --short
 echo "📋 Recent commits:"
 git log --oneline -5
 
-# Show file timestamps to verify we have the latest
-echo "📁 Key files and their modification times:"
-ls -la server.js router.js sender.js 2>/dev/null || echo "Some files not found"
-
 echo "🎉 Robust pull completed successfully!"
-echo "💡 You can now proceed with deployment using:"
-echo "   ./dev/deploy.sh"
-echo "   ./dev/deploy-router.sh"
-echo "   ./dev/deploy-sender.sh"

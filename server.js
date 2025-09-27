@@ -1,20 +1,83 @@
 // Single-service monolith for SMS -> WhatsApp with buttons
 const express = require("express");
 const fetch = require("node-fetch");
+const path = require("path");
 
 const app = express();
 app.use(express.urlencoded({ extended: true })); // ensure form-encoded works
 app.use(express.json({ limit: "256kb" }));       // ensure JSON works
 
-const ENV = process.env.ENV || "dev";
+// ---------- Env + health ----------
+const PORT = process.env.PORT || 8080;
 const BRIDGE_BASE_URL = process.env.BRIDGE_BASE_URL || "https://wa.woosh.ai";
 const BRIDGE_API_KEY = process.env.BRIDGE_API_KEY;
 const BRIDGE_TEMPLATE_NAME = process.env.BRIDGE_TEMPLATE_NAME || "";  // e.g., sms_echo
 const BRIDGE_TEMPLATE_LANG = process.env.BRIDGE_TEMPLATE_LANG || "en";
 
-function log(event, extra = {}) {
-  console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "woosh-lifts", env: ENV, event, ...extra }));
+// ---------- Logging helper ----------
+function log(event, obj) {
+  const payload = { ts: new Date().toISOString(), event, ...obj };
+  // console.log stringifies consistently for Cloud Run textPayload
+  console.log(JSON.stringify(payload));
 }
+
+// ---------- Bridge client ----------
+const { sendTemplateViaBridge } = require("./src/lib/bridge");
+
+// ---------- Template send endpoint ----------
+// POST /wa/send-template
+// body: { to, template: { name, languageCode?, components? }, id? }
+app.post("/wa/send-template", async (req, res) => {
+  try {
+    if (!BRIDGE_API_KEY) {
+      return res.status(401).json({ ok: false, error: "auth", note: "BRIDGE_API_KEY missing" });
+    }
+    const b = req.body || {};
+    const id = String(b.id || `tpl-${Date.now()}`);
+    const toRaw = String(b.to || "");
+    const to = toRaw.replace(/[^\d]/g, ""); // numeric only for Bridge (E.164 without +)
+
+    if (!to) {
+      return res.status(400).json({ ok: false, error: "missing_to" });
+    }
+
+    const tpl = b.template || {};
+    const name = (tpl.name || "").trim();
+    const languageCode = (tpl.languageCode || tpl.language?.code || "en_US").trim();
+    const components = Array.isArray(tpl.components) ? tpl.components : undefined;
+
+    if (!name) {
+      return res.status(400).json({ ok: false, error: "unsupported_payload", note: "template.name required" });
+    }
+
+    log("wa_template_attempt", { id, to, name, languageCode, hasComponents: Boolean(components) });
+
+    const data = await sendTemplateViaBridge({
+      baseUrl: BRIDGE_BASE_URL,
+      apiKey: BRIDGE_API_KEY,
+      to,
+      name,
+      languageCode,
+      components,
+    });
+
+    const wa_id = data?.messages?.[0]?.id || null;
+    log("wa_template_ok", { id, to, name, languageCode, wa_id });
+    return res.status(200).json({ ok: true, type: "template", wa_id, graph: data });
+  } catch (err) {
+    // Bridge client throws with { code, status, body }
+    if (err && err.code === "auth") {
+      log("wa_template_fail", { reason: "auth", detail: err.body || String(err) });
+      return res.status(401).json({ ok: false, error: "auth" });
+    }
+    if (err && err.code === "send_failed") {
+      log("wa_template_fail", { reason: "send_failed", status: err.status, body: err.body });
+      return res.status(502).json({ ok: false, error: "send_failed", status: err.status, body: err.body });
+    }
+    log("wa_template_fail", { reason: "unexpected", detail: String(err && err.stack || err) });
+    return res.status(500).json({ ok: false, error: "unexpected" });
+  }
+});
 
 // WhatsApp Bridge helpers
 async function sendWaText(toE164Plus, text, context = {}) {
@@ -98,8 +161,8 @@ async function sendWaTemplate(toE164Plus, templateName, lang, params /* array of
   return body;
 }
 
-// Health endpoints (mandatory)
-app.get("/", (_req, res) => res.status(200).send("ok"));
+// quick root health (you already have "/" returning ok)
+app.get("/", (_req, res) => res.status(200).send("woosh-lifts: ok"));
 app.get("/healthz", (_req, res) => res.status(200).send("ok"));
 
 // Debug: last inbound SMS seen by this instance
@@ -224,6 +287,6 @@ app.post("/wa/webhook", async (req, res) => {
   }
 });
 
-// Start server
-const port = process.env.PORT || 8080;
-app.listen(port, () => log("listen", { port }));
+app.listen(PORT, "0.0.0.0", () => {
+  log("listen", { port: Number(PORT) });
+});
