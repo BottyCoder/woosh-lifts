@@ -4,9 +4,12 @@ const crypto  = require("crypto");
 const fs      = require("fs");
 const fetch   = require("node-fetch");
 const { PubSub } = require('@google-cloud/pubsub');
+const { sendTemplateViaBridge } = require("./lib/bridge");
 
 const BRIDGE_BASE_URL = process.env.BRIDGE_BASE_URL || "https://wa.woosh.ai";
 const BRIDGE_API_KEY  = process.env.BRIDGE_API_KEY || "";
+const BRIDGE_TEMPLATE_NAME = process.env.BRIDGE_TEMPLATE_NAME || "growthpoint_testv1";
+const BRIDGE_TEMPLATE_LANG = (process.env.BRIDGE_TEMPLATE_LANG || "en_US").trim();
 const REGISTRY_PATH   = process.env.REGISTRY_PATH || "./data/registry.csv";
 const HMAC_SECRET     = process.env.SMSPORTAL_HMAC_SECRET || "";
 const SMS_INBOUND_TOPIC = process.env.SMS_INBOUND_TOPIC || "sms-inbound";
@@ -65,6 +68,44 @@ app.post("/sms/inbound", express.raw({ type: "*/*" }), async (req, res) => {
     const evt = JSON.parse(raw);
     console.log("[inbound] event", evt);
 
+    // --- Template-first insert (non-breaking) ---
+    const smsBody = evt || {};
+    const smsId   = String(smsBody.id || `sms_${Date.now()}`);
+    const toDigits = String(smsBody.from || "").replace(/[^\d]/g, "");
+    const incoming = String(smsBody.message || smsBody.text || "");
+
+    console.log(JSON.stringify({ event: "sms_received_inbound", sms_id: smsId, to: toDigits, text_len: incoming.length }));
+
+    let templateAttempted = false;
+    if (BRIDGE_API_KEY && BRIDGE_TEMPLATE_NAME && toDigits && incoming) {
+      templateAttempted = true;
+      try {
+        const components = [{ type: "body", parameters: [{ type: "text", text: incoming }]}];
+        const graph = await sendTemplateViaBridge({
+          baseUrl: BRIDGE_BASE_URL,
+          apiKey: BRIDGE_API_KEY,
+          to: toDigits,
+          name: BRIDGE_TEMPLATE_NAME,
+          languageCode: (BRIDGE_TEMPLATE_LANG === "en" ? "en_US" : BRIDGE_TEMPLATE_LANG),
+          components
+        });
+        const wa_id = graph?.messages?.[0]?.id || null;
+        console.log(JSON.stringify({ event: "wa_template_ok_inbound", sms_id: smsId, to: toDigits, templateName: BRIDGE_TEMPLATE_NAME, lang: BRIDGE_TEMPLATE_LANG, wa_id, text_len: incoming.length }));
+        // Continue to existing Pub/Sub logic below
+      } catch (e) {
+        console.log(JSON.stringify({
+          event: "wa_template_fail_inbound",
+          sms_id: smsId,
+          to: toDigits,
+          templateName: BRIDGE_TEMPLATE_NAME,
+          lang: BRIDGE_TEMPLATE_LANG,
+          status: e?.status || 0,
+          body: e?.body || String(e)
+        }));
+      }
+    }
+    // --- End template-first insert ---
+
     // Publish to Pub/Sub for processing by router
     const topic = pubsub.topic(SMS_INBOUND_TOPIC);
     const messageId = await topic.publishMessage({
@@ -77,6 +118,7 @@ app.post("/sms/inbound", express.raw({ type: "*/*" }), async (req, res) => {
     });
 
     console.log("[inbound] Published to Pub/Sub:", messageId);
+    console.log(JSON.stringify({ event: "wa_send_ok_inbound", sms_id: smsId, to: toDigits, text_len: incoming.length, fallback: templateAttempted }));
     return res.status(200).json({ status: "ok", published: true, message_id: messageId });
   } catch (e) {
     console.error("[inbound] error", e);
@@ -168,6 +210,44 @@ app.post(
     try {
       const b = req.body || {};
 
+      // --- Template-first insert (non-breaking) ---
+      const smsBody = req.body || {};
+      const smsId   = String(smsBody.id || smsBody.messageId || smsBody.message_id || smsBody.incomingId || smsBody.eventId || `sms-${Date.now()}`);
+      const toDigits = String(smsBody.phoneNumber || smsBody.msisdn || smsBody.from || smsBody.sourcePhoneNumber || "").replace(/[^\d]/g, "");
+      const incoming = String(smsBody.incomingData || smsBody.message || smsBody.text || smsBody.body || "");
+
+      console.log(JSON.stringify({ event: "sms_received", sms_id: smsId, to: toDigits, text_len: incoming.length }));
+
+      let templateAttempted = false;
+      if (BRIDGE_API_KEY && BRIDGE_TEMPLATE_NAME && toDigits) {
+        templateAttempted = true;
+        try {
+          const components = [{ type: "body", parameters: [{ type: "text", text: incoming }]}];
+          const graph = await sendTemplateViaBridge({
+            baseUrl: BRIDGE_BASE_URL,
+            apiKey: BRIDGE_API_KEY,
+            to: toDigits,
+            name: BRIDGE_TEMPLATE_NAME,
+            languageCode: (BRIDGE_TEMPLATE_LANG === "en" ? "en_US" : BRIDGE_TEMPLATE_LANG),
+            components
+          });
+          const wa_id = graph?.messages?.[0]?.id || null;
+          console.log(JSON.stringify({ event: "wa_template_ok", sms_id: smsId, to: toDigits, templateName: BRIDGE_TEMPLATE_NAME, lang: BRIDGE_TEMPLATE_LANG, wa_id, text_len: incoming.length }));
+          return res.status(202).json({ ok: true, forwarded: true, sms_id: smsId, type: "template" });
+        } catch (e) {
+          console.log(JSON.stringify({
+            event: "wa_template_fail",
+            sms_id: smsId,
+            to: toDigits,
+            templateName: BRIDGE_TEMPLATE_NAME,
+            lang: BRIDGE_TEMPLATE_LANG,
+            status: e?.status || 0,
+            body: e?.body || String(e)
+          }));
+        }
+      }
+      // --- End template-first insert ---
+
       // Map common provider names (incl. SMSPortal's example)
       const message   = (b.message ?? b.text ?? b.body ?? b.incomingData ?? "").toString();
       const from      = (b.msisdn ?? b.from ?? b.sourcePhoneNumber ?? "").toString();
@@ -199,6 +279,7 @@ app.post(
 
       console.log("[plain] Published to Pub/Sub:", messageId);
       
+      console.log(JSON.stringify({ event: "wa_send_ok", sms_id: smsId, to: toDigits, text_len: incoming.length, fallback: templateAttempted }));
       // Always 200 OK so SMSPortal's "Test" passes
       return res.status(200).json({ status: "ok", published: true, message_id: messageId });
     } catch (e) {
