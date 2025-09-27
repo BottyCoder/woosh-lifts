@@ -221,8 +221,8 @@ app.post("/admin/ping-bridge", express.json(), async (req, res) => {
   }
 });
 
-const port = Number(process.env.PORT) || 8080;
-app.listen(port, "0.0.0.0", () => console.log(`woosh-lifts listening on :${port}`));
+// Export app for use by root server.js
+module.exports = app;
 
 // -------- super-permissive portal test endpoint --------
 // Accept anything, record it, always return 200.
