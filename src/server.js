@@ -111,20 +111,41 @@ app.post('/sms/direct', jsonParser, async (req, res) => {
     const to = toDigits; // Bridge expects digits only (no '+')
 
     if (tplName) {
+      // Attempt 1: send with a single body text param
       try {
         const components = [{ type: "body", parameters: [{ type: "text", text: incoming }]}];
-        const r = await sendTemplateViaBridge({ 
+        const r = await sendTemplateViaBridge({
           baseUrl: BRIDGE_BASE_URL,
           apiKey: BRIDGE_API_KEY,
-          to, 
-          name: tplName, 
-          languageCode: tplLang, 
-          components 
+          to,
+          name: tplName,
+          languageCode: tplLang,
+          components
         });
-        logEvent('wa_template_ok', { sms_id: smsId, to: plus(to), provider_id: r?.id || null, templateName: tplName, lang: tplLang });
+        logEvent('wa_template_ok', { sms_id: smsId, to: plus(to), provider_id: r?.id || null, templateName: tplName, lang: tplLang, variant: 'with_body_param' });
         return res.status(202).json({ ok: true, template: true, id: smsId });
       } catch (e) {
-        logEvent('wa_template_fail', { sms_id: smsId, to: plus(to), status: e?.status || null, body: e?.body || e?.message || String(e) });
+        const status = e?.status || null;
+        const errBody = e?.body || e?.message || String(e);
+        logEvent('wa_template_fail', { sms_id: smsId, to: plus(to), status, body: errBody, variant: 'with_body_param' });
+        // If template is parameterless, retry with NO components
+        const unsupported = status === 400 && (typeof errBody === 'object' ? errBody?.error === 'unsupported_payload' : String(errBody).includes('unsupported_payload'));
+        if (unsupported) {
+          try {
+            const r2 = await sendTemplateViaBridge({
+              baseUrl: BRIDGE_BASE_URL,
+              apiKey: BRIDGE_API_KEY,
+              to,
+              name: tplName,
+              languageCode: tplLang
+              // no components
+            });
+            logEvent('wa_template_ok', { sms_id: smsId, to: plus(to), provider_id: r2?.id || null, templateName: tplName, lang: tplLang, variant: 'no_components' });
+            return res.status(202).json({ ok: true, template: true, id: smsId });
+          } catch (e2) {
+            logEvent('wa_template_fail', { sms_id: smsId, to: plus(to), status: e2?.status || null, body: e2?.body || e2?.message || String(e2), variant: 'no_components' });
+          }
+        }
       }
     }
     // fallback → plain text
