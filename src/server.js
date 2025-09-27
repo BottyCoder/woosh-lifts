@@ -43,6 +43,17 @@ loadRegistry();
 
 app.get("/", (_req, res) => res.status(200).send("woosh-lifts: ok"));
 
+// Admin status (optional quick check)
+app.get('/admin/status', (req, res) => {
+  const templateEnabled = Boolean(process.env.BRIDGE_TEMPLATE_NAME && process.env.BRIDGE_TEMPLATE_LANG);
+  res.json({
+    templateEnabled,
+    templateName: process.env.BRIDGE_TEMPLATE_NAME || null,
+    templateLang: process.env.BRIDGE_TEMPLATE_LANG || null,
+    env: process.env.ENV || 'dev'
+  });
+});
+
 // ---------- HMAC helpers ----------
 function toStr(body) {
   return Buffer.isBuffer(body) ? body.toString("utf8")
