@@ -77,6 +77,24 @@ function normalize(body = {}) {
 // readiness
 app.get('/healthz', (_, res) => res.send('ok'));
 
+// --- DEBUG: who/what is running (temporary) ---
+app.get('/__debug', (req, res) => {
+  // List registered top-level routes (methods + paths)
+  const routes = [];
+  (app._router?.stack || []).forEach(layer => {
+    if (layer.route && layer.route.path) {
+      const methods = Object.keys(layer.route.methods || {}).filter(Boolean);
+      routes.push({ path: layer.route.path, methods });
+    }
+  });
+  res.json({
+    build: process.env.APP_BUILD || null,
+    entry: (require.main && require.main.filename) || null,
+    cwd: process.cwd(),
+    routes
+  });
+});
+
 // DIRECT route: template-first, no forwarding
 app.post('/sms/direct', async (req, res) => {
   try {
