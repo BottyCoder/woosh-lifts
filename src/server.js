@@ -9,7 +9,8 @@ const { sendTemplateViaBridge, sendTextViaBridge } = require("./lib/bridge");
 const BRIDGE_BASE_URL = process.env.BRIDGE_BASE_URL || "https://wa.woosh.ai";
 const BRIDGE_API_KEY  = process.env.BRIDGE_API_KEY || "";
 const BRIDGE_TEMPLATE_NAME = process.env.BRIDGE_TEMPLATE_NAME || "growthpoint_testv1";
-const BRIDGE_TEMPLATE_LANG = (process.env.BRIDGE_TEMPLATE_LANG || "en_US").trim();
+// Always default to "en" and normalize any provided code down to "en"
+const BRIDGE_TEMPLATE_LANG = ((process.env.BRIDGE_TEMPLATE_LANG || "en").trim().split(/[_-]/)[0] || "en");
 const REGISTRY_PATH   = process.env.REGISTRY_PATH || "./data/registry.csv";
 const HMAC_SECRET     = process.env.SMSPORTAL_HMAC_SECRET || "";
 const SMS_INBOUND_TOPIC = process.env.SMS_INBOUND_TOPIC || "sms-inbound";
