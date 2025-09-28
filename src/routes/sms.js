@@ -88,9 +88,11 @@ router.post('/plain', express.json(), async (req, res) => {
     
     // Create normalized message for ingestion
     const payload = {
+      provider: 'portal',
       provider_id: messageData.provider_id,
-      from_msisdn: messageData.msisdn,
-      body: messageData.text,
+      msisdn: `+${messageData.msisdn}`,
+      text: messageData.text,
+      ts: new Date().toISOString(),
       meta: { 
         provider_shape: messageData.provider_shape,
         original: body
@@ -115,7 +117,11 @@ router.post('/plain', express.json(), async (req, res) => {
     
     return res.status(202).json({ ok, idempotent, message_id });
   } catch (err) {
-    console.error('[sms/plain] ingest error:', err && err.message);
+    console.error('[sms/plain] ingest error:', JSON.stringify({
+      message: err && err.message,
+      code: err && err.code,
+      stack: err && err.stack
+    }));
     return res.status(500).json({ error: 'internal_error', message: 'Failed to process SMS message' });
   }
 });
