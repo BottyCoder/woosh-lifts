@@ -12,7 +12,7 @@
     "pg": "^8.11.3"
   },
   "scripts": {
-    "start": "node server.js",
+    "start": "node src/server.js",
     "migrate": "node scripts/migrate.js",
     "postinstall": "echo 'ready \ud83d\ude80'"
   },

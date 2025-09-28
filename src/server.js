@@ -697,10 +697,39 @@ app.get("/api/inbound/latest", (_req, res) => {
   res.json(global.LAST_INBOUND);
 });
 
-// Start retry processor if enabled
-if (process.env.ENABLE_RETRY_PROCESSOR !== 'false') {
-  startRetryProcessor(5000); // Process every 5 seconds
-}
-
 // Error handling middleware (must be last)
 app.use(errorHandler);
+
+// Server startup
+const PORT = parseInt(process.env.PORT || '8080', 10);
+const HOST = '0.0.0.0';
+
+async function start() {
+  try {
+    // run migrations first (ok; they're quick)
+    await runMigrations?.();
+
+    // start background processors without blocking startup
+    try {
+      startRetryProcessor?.().catch(err =>
+        console.error(JSON.stringify({ level: 'error', msg: 'retry_start_error', error: err?.message, stack: err?.stack }))
+      );
+    } catch (e) {
+      console.error(JSON.stringify({ level: 'error', msg: 'retry_start_throw', error: e?.message, stack: e?.stack }));
+    }
+
+    const server = app.listen(PORT, HOST, () => {
+      console.log(JSON.stringify({ level: 'info', msg: 'server_listening', port: PORT, host: HOST }));
+    });
+    return server;
+  } catch (err) {
+    console.error(JSON.stringify({ level: 'error', msg: 'boot_error', error: err?.message, stack: err?.stack }));
+    process.exit(1);
+  }
+}
+
+if (require.main === module) {
+  start();
+}
+
+module.exports = { app, start };
