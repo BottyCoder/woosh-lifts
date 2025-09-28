@@ -1,73 +1,16 @@
 -- Add retry and breaker support to messages table
 -- This migration adds status tracking, attempt counting, and error handling
 
--- Add new columns to messages table if they don't exist
-DO $$
-BEGIN
-  -- Add status column if it doesn't exist
-  IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns 
-    WHERE table_name = 'messages' AND column_name = 'status'
-  ) THEN
-    ALTER TABLE messages ADD COLUMN status text DEFAULT 'queued';
-  END IF;
-  
-  -- Add attempt_count column if it doesn't exist
-  IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns 
-    WHERE table_name = 'messages' AND column_name = 'attempt_count'
-  ) THEN
-    ALTER TABLE messages ADD COLUMN attempt_count integer DEFAULT 0;
-  END IF;
-  
-  -- Add last_error column if it doesn't exist
-  IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns 
-    WHERE table_name = 'messages' AND column_name = 'last_error'
-  ) THEN
-    ALTER TABLE messages ADD COLUMN last_error text;
-  END IF;
-  
-  -- Add last_error_at column if it doesn't exist
-  IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns 
-    WHERE table_name = 'messages' AND column_name = 'last_error_at'
-  ) THEN
-    ALTER TABLE messages ADD COLUMN last_error_at timestamptz;
-  END IF;
-  
-  -- Add next_attempt_at column if it doesn't exist
-  IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns 
-    WHERE table_name = 'messages' AND column_name = 'next_attempt_at'
-  ) THEN
-    ALTER TABLE messages ADD COLUMN next_attempt_at timestamptz;
-  END IF;
-  
-  -- Add template_name column if it doesn't exist
-  IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns 
-    WHERE table_name = 'messages' AND column_name = 'template_name'
-  ) THEN
-    ALTER TABLE messages ADD COLUMN template_name text;
-  END IF;
-  
-  -- Add template_language column if it doesn't exist
-  IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns 
-    WHERE table_name = 'messages' AND column_name = 'template_language'
-  ) THEN
-    ALTER TABLE messages ADD COLUMN template_language text;
-  END IF;
-  
-  -- Add template_components column if it doesn't exist
-  IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns 
-    WHERE table_name = 'messages' AND column_name = 'template_components'
-  ) THEN
-    ALTER TABLE messages ADD COLUMN template_components jsonb;
-  END IF;
-END $$;
+-- Add retry/breaker columns to messages table (idempotent)
+ALTER TABLE messages
+  ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'queued',
+  ADD COLUMN IF NOT EXISTS attempt_count integer NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS next_attempt_at timestamptz NOT NULL DEFAULT NOW(),
+  ADD COLUMN IF NOT EXISTS last_error text,
+  ADD COLUMN IF NOT EXISTS last_error_at timestamptz,
+  ADD COLUMN IF NOT EXISTS template_name text,
+  ADD COLUMN IF NOT EXISTS template_language text,
+  ADD COLUMN IF NOT EXISTS template_components jsonb;
 
 -- Create status enum if it doesn't exist
 DO $$
@@ -82,8 +25,16 @@ BEGIN
   END IF;
 END $$;
 
--- Update status column to use enum
-ALTER TABLE messages ALTER COLUMN status TYPE message_status_t USING status::message_status_t;
+-- Update status column to use enum (only if not already converted)
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns 
+    WHERE table_name = 'messages' AND column_name = 'status' AND data_type = 'text'
+  ) THEN
+    ALTER TABLE messages ALTER COLUMN status TYPE message_status_t USING status::message_status_t;
+  END IF;
+END $$;
 
 -- Create wa_attempts table for tracking individual attempts
 CREATE TABLE IF NOT EXISTS wa_attempts (
@@ -112,6 +63,7 @@ CREATE TABLE IF NOT EXISTS breaker_state (
 CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status);
 CREATE INDEX IF NOT EXISTS idx_messages_next_attempt ON messages(next_attempt_at) WHERE status = 'queued';
 CREATE INDEX IF NOT EXISTS idx_messages_attempt_count ON messages(attempt_count);
+CREATE INDEX IF NOT EXISTS idx_messages_status_next_attempt ON messages (status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_wa_attempts_message_id ON wa_attempts(message_id);
 CREATE INDEX IF NOT EXISTS idx_wa_attempts_created_at ON wa_attempts(created_at);
 CREATE INDEX IF NOT EXISTS idx_wa_attempts_status ON wa_attempts(status);

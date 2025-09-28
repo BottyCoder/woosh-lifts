@@ -26,19 +26,7 @@ const SMS_INBOUND_TOPIC = process.env.SMS_INBOUND_TOPIC || "sms-inbound";
 // Initialize Pub/Sub
 const pubsub = new PubSub();
 
-// Run migrations on startup if DATABASE_URL is present
-if (process.env.DATABASE_URL) {
-  const { spawn } = require('child_process');
-  console.log('[server] Running database migrations...');
-  const migrate = spawn('node', ['scripts/migrate.js'], { stdio: 'inherit' });
-  migrate.on('close', (code) => {
-    if (code !== 0) {
-      console.error('[server] Migration failed, exiting');
-      process.exit(1);
-    }
-    console.log('[server] Migrations completed successfully');
-  });
-}
+// Migrations are now handled in root server.js
 
 const app = express();
 // no global express.json(); we need raw bytes for HMAC on specific routes

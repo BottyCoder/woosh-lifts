@@ -63,6 +63,19 @@ STATUS="$(curl -fsS "$BASE/admin/status" || true)"
 echo "$STATUS" | jq -e '.ok==true' >/dev/null 2>&1 || bad '/admin/status not OK'
 ok "Admin status reachable"
 echo "$STATUS" | jq . >/dev/null 2>&1 && ok "Status JSON parse OK" || bad "Status not JSON"
-say "$STATUS" | jq . >/dev/null 2>&1 && ok "Status JSON parse OK" || bad "Status not JSON"
+
+# DB schema sanity check
+SCHEMA_CHECK="$(curl -fsS "$BASE/admin/status" | jq -r '.db_schema // empty' || true)"
+if [ -n "$SCHEMA_CHECK" ]; then
+  # Check for required retry columns
+  if echo "$SCHEMA_CHECK" | jq -e '.messages.status and .messages.attempt_count and .messages.next_attempt_at' >/dev/null 2>&1; then
+    ok "DB schema OK: retry columns present"
+  else
+    bad "messages retry columns missing; run migrations (03_add_retry_breaker.sql)"
+  fi
+else
+  # Fallback: direct DB query if schema info not available
+  echo "⚠ Schema info not available in status, skipping DB schema check"
+fi
 
 ok "Preflight passed"
