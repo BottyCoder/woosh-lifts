@@ -81,12 +81,8 @@ loadRegistry();
 
 app.get("/", (_req, res) => res.status(200).send("woosh-lifts: ok"));
 
-// Mount SMS routes (provider adapters disabled in prod)
-if (process.env.ENABLE_PROVIDER_ADAPTERS !== 'false') {
-  app.use('/sms', smsRoutes);
-} else {
-  console.log('[server] Provider adapters disabled - only /sms/plain available');
-}
+// Mount SMS routes (core functionality only)
+app.use('/sms', smsRoutes);
 
 // Mount send routes
 app.use('/send', sendRoutes);
