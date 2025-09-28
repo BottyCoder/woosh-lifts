@@ -115,7 +115,7 @@ app.get('/admin/status', async (req, res) => {
     // Get build info
     const build = {
       node: process.version,
-      commit: process.env.APP_BUILD || process.env.GIT_SHA || 'unknown'
+      commit: process.env.COMMIT_SHA || process.env.APP_BUILD || process.env.GIT_SHA || 'unknown'
     };
     
     res.json({
