@@ -35,7 +35,7 @@ REV="$(gcloud run deploy "$SVC" \
   --min-instances 1 \
   --add-cloudsql-instances "$INSTANCE_CONN" \
   --concurrency 20 --max-instances 5 \
-  --set-env-vars BRIDGE_BASE_URL=https://wa.woosh.ai,ENV=prod \
+  --set-env-vars BRIDGE_BASE_URL=https://wa.woosh.ai,ENV=prod,COMMIT_SHA="$(git rev-parse HEAD)",ENABLE_PROVIDER_ADAPTERS=false \
   --set-secrets BRIDGE_API_KEY=BRIDGE_API_KEY:latest,BRIDGE_ADMIN_TOKEN=BRIDGE_ADMIN_TOKEN:latest,DB_PASSWORD=DB_PASSWORD:latest \
   --format='value(status.latestCreatedRevisionName)')"
 ok "New revision: $REV"

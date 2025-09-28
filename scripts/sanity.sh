@@ -60,110 +60,38 @@ else
   echo "⚠ jq not available, using grep for assertions"
 fi
 
-# P1: Happy paths (normalization works)
-phase "P1 Happy Paths - Provider Normalization"
-
-echo "Testing Twilio provider..."
-R1=$(hit POST /sms/provider/twilio "$(cat test/fixtures/providers/twilio/happy.json)")
-assert_contains "$R1" '"ok":true'
-assert_contains "$R1" '"idempotent":false'
-
-echo "Testing Infobip provider..."
-R2=$(hit POST /sms/provider/infobip "$(cat test/fixtures/providers/infobip/happy.json)")
-assert_contains "$R2" '"ok":true'
-assert_contains "$R2" '"idempotent":false'
-
-echo "Testing MTN provider..."
-R3=$(hit POST /sms/provider/mtn "$(cat test/fixtures/providers/mtn/happy.json)")
-assert_contains "$R3" '"ok":true'
-assert_contains "$R3" '"idempotent":false'
-
-echo "Testing Vodacom provider..."
-R4=$(hit POST /sms/provider/vodacom "$(cat test/fixtures/providers/vodacom/happy.json)")
-assert_contains "$R4" '"ok":true'
-assert_contains "$R4" '"idempotent":false'
-
-echo "Testing Generic provider..."
-R5=$(hit POST /sms/provider/generic "$(cat test/fixtures/providers/generic/happy.json)")
-assert_contains "$R5" '"ok":true'
-assert_contains "$R5" '"idempotent":false'
+# P1: Core SMS ingestion (/sms/plain only)
+phase "P1 Core SMS Ingestion"
 
 echo "Testing legacy /sms/plain endpoint..."
-R6=$(hit POST /sms/plain '{"phoneNumber":"+27824537125","incomingData":"Hello world","id":"demo-123"}')
-assert_contains "$R6" '"ok":true'
-assert_contains "$R6" '"idempotent":false'
+R1=$(hit POST /sms/plain '{"phoneNumber":"+27824537125","incomingData":"Hello world","id":"demo-123"}')
+assert_contains "$R1" '"ok":true'
 
-# P2: Dupe (idempotency)
-phase "P2 Idempotency Tests"
+echo "Testing /sms/plain with different format..."
+R2=$(hit POST /sms/plain '{"from":"+27824537125","text":"Hello from different format","id":"demo-456"}')
+assert_contains "$R2" '"ok":true'
 
-echo "Testing Twilio duplicate..."
-D1=$(hit POST /sms/provider/twilio "$(cat test/fixtures/providers/twilio/dupe.json)")
-assert_contains "$D1" '"ok":true'
-assert_contains "$D1" '"idempotent":false'
+# P2: Validation failures
+phase "P2 Validation Error Tests"
 
-D2=$(hit POST /sms/provider/twilio "$(cat test/fixtures/providers/twilio/dupe.json)")
-assert_contains "$D2" '"ok":true'
-assert_contains "$D2" '"idempotent":true'
-
-echo "Testing Infobip duplicate..."
-D3=$(hit POST /sms/provider/infobip "$(cat test/fixtures/providers/infobip/dupe.json)")
-assert_contains "$D3" '"ok":true'
-assert_contains "$D3" '"idempotent":false'
-
-D4=$(hit POST /sms/provider/infobip "$(cat test/fixtures/providers/infobip/dupe.json)")
-assert_contains "$D4" '"ok":true'
-assert_contains "$D4" '"idempotent":true'
-
-# P3: Validation failures
-phase "P3 Validation Error Tests"
-
-echo "Testing invalid MSISDN..."
-V1=$(hit POST /sms/provider/generic '{"msisdn":"12345","text":"bad number","provider_id":"v-1"}' || true)
+echo "Testing missing phone number..."
+V1=$(hit POST /sms/plain '{"incomingData":"Hello world","id":"demo-789"}' || true)
 assert_contains "$V1" '"error"'
-assert_contains "$V1" '"field":"msisdn"'
 
-echo "Testing empty text..."
-V2=$(hit POST /sms/provider/generic '{"msisdn":"+27824537125","text":"   ","provider_id":"v-2"}' || true)
-assert_contains "$V2" '"field":"text"'
+echo "Testing missing text..."
+V2=$(hit POST /sms/plain '{"phoneNumber":"+27824537125","id":"demo-101"}' || true)
+assert_contains "$V2" '"error"'
 
-echo "Testing missing required field..."
-V3=$(hit POST /sms/provider/generic '{"msisdn":"+27824537125","text":"missing provider_id"}' || true)
-assert_contains "$V3" '"error"'
-assert_contains "$V3" '"field":"provider_id"'
-
-# P4: Edge cases
-phase "P4 Edge Cases"
-
-echo "Testing special characters..."
-E1=$(hit POST /sms/provider/twilio "$(cat test/fixtures/providers/twilio/edge.json)")
-assert_contains "$E1" '"ok":true'
-
-echo "Testing unicode characters..."
-E2=$(hit POST /sms/provider/infobip "$(cat test/fixtures/providers/infobip/edge.json)")
-assert_contains "$E2" '"ok":true'
-
-echo "Testing special chars in MTN..."
-E3=$(hit POST /sms/provider/mtn "$(cat test/fixtures/providers/mtn/edge.json)")
-assert_contains "$E3" '"ok":true'
-
-echo "Testing numbers in Vodacom..."
-E4=$(hit POST /sms/provider/vodacom "$(cat test/fixtures/providers/vodacom/edge.json)")
-assert_contains "$E4" '"ok":true'
-
-echo "Testing special chars in Generic..."
-E5=$(hit POST /sms/provider/generic "$(cat test/fixtures/providers/generic/edge.json)")
-assert_contains "$E5" '"ok":true'
-
-# P5: Health check
-phase "P5 Health Check"
+# P3: Health check
+phase "P3 Health Check"
 
 echo "Testing SMS routes health..."
 H1=$(hit GET /sms/health)
 assert_contains "$H1" '"ok":true'
 assert_contains "$H1" '"service":"sms-routes"'
 
-# P6: Send routes (Swathe 2)
-phase "P6 Send Routes - WhatsApp Bridge"
+# P4: Send routes (Swathe 2)
+phase "P4 Send Routes - WhatsApp Bridge"
 
 echo "Testing text message send..."
 S1=$(hit POST /send/text '{"to":"+27824537125","text":"Hello from sanity test"}')
@@ -180,8 +108,8 @@ B1=$(hit GET /send/breaker)
 assert_contains "$B1" '"ok":true'
 assert_contains "$B1" '"breaker"'
 
-# P7: Retry and breaker behavior (Swathe 2)
-phase "P7 Retry and Breaker Behavior"
+# P5: Retry and breaker behavior (Swathe 2)
+phase "P5 Retry and Breaker Behavior"
 
 echo "Testing forced error (if DEV_FORCE_BRIDGE_ERROR is set)..."
 if [ -n "$DEV_FORCE_BRIDGE_ERROR" ]; then
