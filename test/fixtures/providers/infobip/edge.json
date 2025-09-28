@@ -1,0 +1,11 @@
+{
+  "results": [
+    {
+      "from": "+27821234567",
+      "text": "Infobip test with unicode: 🚀📱",
+      "messageId": "infobip-abcdef123456",
+      "to": "+27123456789",
+      "status": "delivered"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "From": "+27821234567",
+  "Body": "Test message with special chars: @#$%^&*()",
+  "MessageSid": "SMabcdef1234567890",
+  "To": "+27123456789",
+  "SmsStatus": "received",
+  "SmsSid": "SMabcdef1234567890"
+}

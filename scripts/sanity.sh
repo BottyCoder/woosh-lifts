@@ -1,63 +1,179 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Basic sanity tests for woosh-lifts admin endpoints and SMS integration
-# Usage: BASE=https://your-service.run.app ./scripts/sanity.sh
+# SMS Provider Adapter Sanity Tests
+# Tests the provider-agnostic SMS ingest path with idempotency
 
-BASE="${BASE:-http://localhost:8080}"
-echo "Testing against: $BASE"
+BASE="${BASE:-http://localhost:3000}"
+PASS=0
+FAIL=0
 
-# Test 1: Admin status
-echo "==> Test 1: GET /admin/status"
-curl -sS "$BASE/admin/status" | jq .
-echo
+# Helper functions
+hit() {
+  local method="$1"
+  local url="$2"
+  local body="$3"
+  curl -sS -X "$method" "$BASE$url" \
+    -H 'Content-Type: application/json' \
+    --data-raw "$body"
+}
 
-# Test 2: Create a lift
-echo "==> Test 2: POST /admin/lifts"
-LIFT_RESPONSE=$(curl -sS -X POST "$BASE/admin/lifts" -H 'Content-Type: application/json' \
-  --data '{"msisdn":"27821110000","site_name":"Test Tower","building":"Block A","notes":"Sanity test lift"}')
-echo "$LIFT_RESPONSE" | jq .
-LIFT_ID=$(echo "$LIFT_RESPONSE" | jq -r '.data.id')
-echo "Created lift ID: $LIFT_ID"
-echo
+assert_contains() {
+  local hay="$1"
+  local needle="$2"
+  if echo "$hay" | grep -q "$needle"; then
+    PASS=$((PASS+1))
+    echo "✓ PASS: Found '$needle'"
+  else
+    echo "✗ FAIL: Missing '$needle'"
+    echo "Response: $hay"
+    FAIL=$((FAIL+1))
+  fi
+}
 
-# Test 3: Create a contact and link it
-echo "==> Test 3: POST /admin/contacts"
-CONTACT_RESPONSE=$(curl -sS -X POST "$BASE/admin/contacts" -H 'Content-Type: application/json' \
-  --data '{"display_name":"Test Security","primary_msisdn":"27825550000","email":"security@test.com","role":"security"}')
-echo "$CONTACT_RESPONSE" | jq .
-CONTACT_ID=$(echo "$CONTACT_RESPONSE" | jq -r '.data.id')
-echo "Created contact ID: $CONTACT_ID"
-echo
+assert_not_contains() {
+  local hay="$1"
+  local needle="$2"
+  if echo "$hay" | grep -q "$needle"; then
+    echo "✗ FAIL: Found unexpected '$needle'"
+    echo "Response: $hay"
+    FAIL=$((FAIL+1))
+  else
+    PASS=$((PASS+1))
+    echo "✓ PASS: Correctly missing '$needle'"
+  fi
+}
 
-echo "==> Test 3b: Link contact to lift"
-LINK_RESPONSE=$(curl -sS -X POST "$BASE/admin/lifts/$LIFT_ID/contacts" -H 'Content-Type: application/json' \
-  --data "{\"contact_id\":\"$CONTACT_ID\",\"relation\":\"security\"}")
-echo "$LINK_RESPONSE" | jq .
-echo
+phase() {
+  echo ""
+  echo "=========================================="
+  echo "---- $1 ----"
+  echo "=========================================="
+}
 
-# Test 4: Resolve lift (should show linked contact)
-echo "==> Test 4: GET /admin/resolve/lift?msisdn=27821110000"
-curl -sS "$BASE/admin/resolve/lift?msisdn=27821110000" | jq .
-echo
+# Test if jq is available for JSON parsing
+if command -v jq >/dev/null 2>&1; then
+  HAS_JQ=true
+  echo "✓ jq available for JSON parsing"
+else
+  HAS_JQ=false
+  echo "⚠ jq not available, using grep for assertions"
+fi
 
-# Test 5: SMS with provider shape A
-echo "==> Test 5: POST /sms/plain (Provider Shape A)"
-SMS_RESPONSE_A=$(curl -sS -X POST "$BASE/sms/plain" -H 'Content-Type: application/json' \
-  --data '{"id":"smk-001","phoneNumber":"+27821110000","incomingData":"Emergency help needed","provider":"operatorX"}')
-echo "$SMS_RESPONSE_A" | jq .
-echo
+# P1: Happy paths (normalization works)
+phase "P1 Happy Paths - Provider Normalization"
 
-# Test 6: SMS with provider shape B
-echo "==> Test 6: POST /sms/plain (Provider Shape B)"
-SMS_RESPONSE_B=$(curl -sS -X POST "$BASE/sms/plain" -H 'Content-Type: application/json' \
-  --data '{"from":"+27821110000","text":"Another test message","id":"smk-002"}')
-echo "$SMS_RESPONSE_B" | jq .
-echo
+echo "Testing Twilio provider..."
+R1=$(hit POST /sms/provider/twilio "$(cat test/fixtures/providers/twilio/happy.json)")
+assert_contains "$R1" '"ok":true'
+assert_contains "$R1" '"idempotent":false'
 
-# Test 7: Messages pagination
-echo "==> Test 7: GET /admin/messages?lift_id=$LIFT_ID"
-curl -sS "$BASE/admin/messages?lift_id=$LIFT_ID&limit=10" | jq .
-echo
+echo "Testing Infobip provider..."
+R2=$(hit POST /sms/provider/infobip "$(cat test/fixtures/providers/infobip/happy.json)")
+assert_contains "$R2" '"ok":true'
+assert_contains "$R2" '"idempotent":false'
 
-echo "==> Sanity tests completed!"
+echo "Testing MTN provider..."
+R3=$(hit POST /sms/provider/mtn "$(cat test/fixtures/providers/mtn/happy.json)")
+assert_contains "$R3" '"ok":true'
+assert_contains "$R3" '"idempotent":false'
+
+echo "Testing Vodacom provider..."
+R4=$(hit POST /sms/provider/vodacom "$(cat test/fixtures/providers/vodacom/happy.json)")
+assert_contains "$R4" '"ok":true'
+assert_contains "$R4" '"idempotent":false'
+
+echo "Testing Generic provider..."
+R5=$(hit POST /sms/provider/generic "$(cat test/fixtures/providers/generic/happy.json)")
+assert_contains "$R5" '"ok":true'
+assert_contains "$R5" '"idempotent":false'
+
+echo "Testing legacy /sms/plain endpoint..."
+R6=$(hit POST /sms/plain '{"phoneNumber":"+27824537125","incomingData":"Hello world","id":"demo-123"}')
+assert_contains "$R6" '"ok":true'
+assert_contains "$R6" '"idempotent":false'
+
+# P2: Dupe (idempotency)
+phase "P2 Idempotency Tests"
+
+echo "Testing Twilio duplicate..."
+D1=$(hit POST /sms/provider/twilio "$(cat test/fixtures/providers/twilio/dupe.json)")
+assert_contains "$D1" '"ok":true'
+assert_contains "$D1" '"idempotent":false'
+
+D2=$(hit POST /sms/provider/twilio "$(cat test/fixtures/providers/twilio/dupe.json)")
+assert_contains "$D2" '"ok":true'
+assert_contains "$D2" '"idempotent":true'
+
+echo "Testing Infobip duplicate..."
+D3=$(hit POST /sms/provider/infobip "$(cat test/fixtures/providers/infobip/dupe.json)")
+assert_contains "$D3" '"ok":true'
+assert_contains "$D3" '"idempotent":false'
+
+D4=$(hit POST /sms/provider/infobip "$(cat test/fixtures/providers/infobip/dupe.json)")
+assert_contains "$D4" '"ok":true'
+assert_contains "$D4" '"idempotent":true'
+
+# P3: Validation failures
+phase "P3 Validation Error Tests"
+
+echo "Testing invalid MSISDN..."
+V1=$(hit POST /sms/provider/generic '{"msisdn":"12345","text":"bad number","provider_id":"v-1"}' || true)
+assert_contains "$V1" '"error"'
+assert_contains "$V1" '"field":"msisdn"'
+
+echo "Testing empty text..."
+V2=$(hit POST /sms/provider/generic '{"msisdn":"+27824537125","text":"   ","provider_id":"v-2"}' || true)
+assert_contains "$V2" '"field":"text"'
+
+echo "Testing missing required field..."
+V3=$(hit POST /sms/provider/generic '{"msisdn":"+27824537125","text":"missing provider_id"}' || true)
+assert_contains "$V3" '"error"'
+assert_contains "$V3" '"field":"provider_id"'
+
+# P4: Edge cases
+phase "P4 Edge Cases"
+
+echo "Testing special characters..."
+E1=$(hit POST /sms/provider/twilio "$(cat test/fixtures/providers/twilio/edge.json)")
+assert_contains "$E1" '"ok":true'
+
+echo "Testing unicode characters..."
+E2=$(hit POST /sms/provider/infobip "$(cat test/fixtures/providers/infobip/edge.json)")
+assert_contains "$E2" '"ok":true'
+
+echo "Testing special chars in MTN..."
+E3=$(hit POST /sms/provider/mtn "$(cat test/fixtures/providers/mtn/edge.json)")
+assert_contains "$E3" '"ok":true'
+
+echo "Testing numbers in Vodacom..."
+E4=$(hit POST /sms/provider/vodacom "$(cat test/fixtures/providers/vodacom/edge.json)")
+assert_contains "$E4" '"ok":true'
+
+echo "Testing special chars in Generic..."
+E5=$(hit POST /sms/provider/generic "$(cat test/fixtures/providers/generic/edge.json)")
+assert_contains "$E5" '"ok":true'
+
+# P5: Health check
+phase "P5 Health Check"
+
+echo "Testing SMS routes health..."
+H1=$(hit GET /sms/health)
+assert_contains "$H1" '"ok":true'
+assert_contains "$H1" '"service":"sms-routes"'
+
+# Summary
+phase "Test Summary"
+
+echo ""
+echo "=========================================="
+echo "RESULTS: PASS=$PASS FAIL=$FAIL"
+echo "=========================================="
+
+if [ "$FAIL" -eq 0 ]; then
+  echo "🎉 All tests passed! SMS provider adapters are working correctly."
+  exit 0
+else
+  echo "❌ $FAIL test(s) failed. Check the output above for details."
+  exit 1
+fi

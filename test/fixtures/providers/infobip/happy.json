@@ -1,0 +1,12 @@
+{
+  "results": [
+    {
+      "from": "+27824537125",
+      "text": "Hello from Infobip",
+      "messageId": "infobip-123456789",
+      "to": "+27123456789",
+      "status": "delivered",
+      "sentAt": "2024-01-15T10:30:00Z"
+    }
+  ]
+}

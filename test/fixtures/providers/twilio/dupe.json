@@ -1,0 +1,9 @@
+{
+  "From": "+27824537125",
+  "Body": "This is a duplicate message",
+  "MessageSid": "SMduplicate123456789",
+  "To": "+27123456789",
+  "SmsStatus": "received",
+  "SmsSid": "SMduplicate123456789",
+  "SmsTimestamp": "2024-01-15T10:30:00Z"
+}
