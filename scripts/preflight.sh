@@ -60,8 +60,9 @@ ok "Service account roles OK: $SA"
 
 # Live status check
 STATUS="$(curl -fsS "$BASE/admin/status" || true)"
-[[ "$STATUS" == *'"ok": true'* ]] || bad "/admin/status not OK"
+echo "$STATUS" | jq -e '.ok==true' >/dev/null 2>&1 || bad '/admin/status not OK'
 ok "Admin status reachable"
+echo "$STATUS" | jq . >/dev/null 2>&1 && ok "Status JSON parse OK" || bad "Status not JSON"
 say "$STATUS" | jq . >/dev/null 2>&1 && ok "Status JSON parse OK" || bad "Status not JSON"
 
 ok "Preflight passed"
