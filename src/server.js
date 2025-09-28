@@ -11,6 +11,8 @@ const { requestLogger } = require("./mw/log");
 const { errorHandler } = require("./mw/error");
 const { getPagination, paginateQuery } = require("./pagination");
 const smsRoutes = require("./routes/sms");
+const sendRoutes = require("./routes/send");
+const { startRetryProcessor } = require("./lib/retryQueue");
 
 const BRIDGE_BASE_URL = process.env.BRIDGE_BASE_URL || "https://wa.woosh.ai";
 const BRIDGE_API_KEY  = process.env.BRIDGE_API_KEY || "";
@@ -81,6 +83,9 @@ app.get("/", (_req, res) => res.status(200).send("woosh-lifts: ok"));
 
 // Mount SMS routes
 app.use('/sms', smsRoutes);
+
+// Mount send routes
+app.use('/send', sendRoutes);
 
 // Admin status (enriched, no secrets)
 app.get('/admin/status', async (req, res) => {
@@ -703,6 +708,11 @@ app.get("/api/inbound/latest", (_req, res) => {
   if (!global.LAST_INBOUND) return res.status(404).json({ error: "no_inbound_yet" });
   res.json(global.LAST_INBOUND);
 });
+
+// Start retry processor if enabled
+if (process.env.ENABLE_RETRY_PROCESSOR !== 'false') {
+  startRetryProcessor(5000); // Process every 5 seconds
+}
 
 // Error handling middleware (must be last)
 app.use(errorHandler);

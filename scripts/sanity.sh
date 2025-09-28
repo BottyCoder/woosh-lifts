@@ -162,6 +162,45 @@ H1=$(hit GET /sms/health)
 assert_contains "$H1" '"ok":true'
 assert_contains "$H1" '"service":"sms-routes"'
 
+# P6: Send routes (Swathe 2)
+phase "P6 Send Routes - WhatsApp Bridge"
+
+echo "Testing text message send..."
+S1=$(hit POST /send/text '{"to":"+27824537125","text":"Hello from sanity test"}')
+assert_contains "$S1" '"ok":true'
+assert_contains "$S1" '"message_id"'
+
+echo "Testing template message send..."
+S2=$(hit POST /send/template '{"to":"+27824537125","template_name":"test_template","template_language":"en","template_components":[{"type":"body","parameters":[{"type":"text","text":"Test"}]}]}')
+assert_contains "$S2" '"ok":true'
+assert_contains "$S2" '"message_id"'
+
+echo "Testing breaker status..."
+B1=$(hit GET /send/breaker)
+assert_contains "$B1" '"ok":true'
+assert_contains "$B1" '"breaker"'
+
+# P7: Retry and breaker behavior (Swathe 2)
+phase "P7 Retry and Breaker Behavior"
+
+echo "Testing forced error (if DEV_FORCE_BRIDGE_ERROR is set)..."
+if [ -n "$DEV_FORCE_BRIDGE_ERROR" ]; then
+  S3=$(hit POST /send/text '{"to":"+27824537125","text":"Force error test"}' || true)
+  # Should either succeed or fail gracefully
+  echo "Forced error test completed"
+fi
+
+echo "Testing message status endpoint..."
+if [ -n "$S1" ]; then
+  # Extract message ID from previous response (simplified)
+  MSG_ID=$(echo "$S1" | grep -o '"message_id":"[^"]*"' | cut -d'"' -f4 || echo "test-message-id")
+  if [ "$MSG_ID" != "test-message-id" ]; then
+    S4=$(hit GET "/send/status/$MSG_ID")
+    assert_contains "$S4" '"ok":true'
+    assert_contains "$S4" '"message"'
+  fi
+fi
+
 # Summary
 phase "Test Summary"
 
