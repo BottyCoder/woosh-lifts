@@ -10,7 +10,7 @@ const { requireString, optionalString, requireEnum, patterns, createValidationEr
 const { requestLogger } = require("./mw/log");
 const { errorHandler } = require("./mw/error");
 const { getPagination, paginateQuery } = require("./pagination");
-const smsRoutes = require("./routes/sms");
+const smsRoutes = require('./routes/sms');
 const sendRoutes = require("./routes/send");
 const { startRetryProcessor } = require("./lib/retryQueue");
 

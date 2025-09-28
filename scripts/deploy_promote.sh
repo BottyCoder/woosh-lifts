@@ -10,6 +10,8 @@ REGION="${REGION:-africa-south1}"
 SVC="${SVC:-woosh-lifts}"
 PROJECT_ID="$(gcloud config get-value core/project)"
 TAG="$(git rev-parse --short HEAD)-$(date -u +%Y%m%d-%H%M%S)"
+# safe tag: prefix with r-, lower-case, non [a-z0-9-] -> -, trim to 63, strip trailing -
+TAG_NAME="$(echo "r-$TAG" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | cut -c1-63 | sed 's/-$//')"
 IMAGE_URI="$REGION-docker.pkg.dev/$PROJECT_ID/app/$SVC:$TAG"
 
 say "🚀 Deploying $SVC with tag $TAG..."
@@ -32,16 +34,17 @@ REV="$(gcloud run deploy "$SVC" \
   --region "$REGION" \
   --allow-unauthenticated \
   --no-traffic \
+  --tag "$TAG_NAME" \
   --min-instances 1 \
   --add-cloudsql-instances "$INSTANCE_CONN" \
   --concurrency 20 --max-instances 5 \
-  --set-env-vars BRIDGE_BASE_URL=https://wa.woosh.ai,ENV=prod,COMMIT_SHA="$(git rev-parse HEAD)",ENABLE_PROVIDER_ADAPTERS=false \
+  --set-env-vars BRIDGE_BASE_URL=https://wa.woosh.ai,ENV=prod,DB_USER=app_user,DB_NAME=wooshlifts,DB_SOCKET_DIR=/cloudsql,DB_INSTANCE_CONNECTION_NAME="$INSTANCE_CONN" \
   --set-secrets BRIDGE_API_KEY=BRIDGE_API_KEY:latest,BRIDGE_ADMIN_TOKEN=BRIDGE_ADMIN_TOKEN:latest,DB_PASSWORD=DB_PASSWORD:latest \
   --format='value(status.latestCreatedRevisionName)')"
 ok "New revision: $REV"
 
 BASE="$(gcloud run services describe "$SVC" --region "$REGION" --format='value(status.url)')"
-REV_URL="${BASE/https:\/\//https:\/\/$REV---}"
+REV_URL="${BASE/https:\/\//https:\/\/$TAG_NAME---}"
 say "🩺 Probing: $REV_URL/admin/status"
 
 for i in {1..20}; do

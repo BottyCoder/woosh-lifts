@@ -1,9 +1,0 @@
-{
-  "From": "+27824537125",
-  "Body": "Hello, this is a test message",
-  "MessageSid": "SM1234567890abcdef",
-  "To": "+27123456789",
-  "SmsStatus": "received",
-  "SmsSid": "SM1234567890abcdef",
-  "SmsTimestamp": "2024-01-15T10:30:00Z"
-}
