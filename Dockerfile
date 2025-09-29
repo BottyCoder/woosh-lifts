@@ -5,7 +5,7 @@ COPY package*.json ./
 RUN npm ci --omit=dev || npm install --omit=dev
 # app source
 COPY . .
-# ensure scripts are present in runtime image
+# ensure migration scripts are always present in the runtime image
 COPY scripts/ scripts/
 # guard step removed — alpine doesn't ship bash and we don't need it
 EXPOSE 8080
