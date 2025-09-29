@@ -1,13 +1,11 @@
 'use strict';
-// Robust migration runner that tolerates different build layouts.
-// 1) Locate a migration module from several likely paths.
-// 2) Run migrations.
-// 3) Close any DB handles and exit cleanly so Cloud Run Jobs complete.
+// Robust migration runner:
+// 1) find a migration module from several likely paths,
+// 2) run migrations,
+// 3) close DB handles,
+// 4) exit so Cloud Run marks the job Completed.
 
-const tryRequire = (p) => {
-  try { return require(p); } catch { return null; }
-};
-
+const tryRequire = (p) => { try { return require(p); } catch { return null; } };
 const candidates = [
   '../src/lib/migrateRunner',
   '../src/db/migrateRunner',
@@ -21,16 +19,17 @@ const candidates = [
 
 let mod = null;
 for (const p of candidates) {
-  mod = tryRequire(p);
-  if (mod && typeof mod.runMigrations === 'function') {
+  const m = tryRequire(p);
+  if (m && typeof m.runMigrations === 'function') {
     console.log(`[migrate] using migration module: ${p}`);
+    mod = m;
     break;
   }
 }
 
-if (!mod || typeof mod.runMigrations !== 'function') {
-  console.error('[migrate] Could not locate a runMigrations() export in any known module path.');
-  console.error('[migrate] Checked paths:', candidates.join(', '));
+if (!mod) {
+  console.error('[migrate] Could not locate a runMigrations() export.');
+  console.error('[migrate] Checked:', candidates.join(', '));
   process.exit(1);
 }
 
@@ -57,17 +56,14 @@ const tryEnd = async (obj, label) => {
     console.error('[migrate] Failed:', err);
     process.exitCode = 1;
   } finally {
-    // close likely handles from both module exports and globals
-    await tryEnd(pool,   'pool');
+    await tryEnd(pool, 'pool');
     await tryEnd(client, 'client');
-    await tryEnd(db,     'db');
-    await tryEnd(globalThis.pool,   'global.pool');
+    await tryEnd(db, 'db');
+    await tryEnd(globalThis.pool, 'global.pool');
     await tryEnd(globalThis.client, 'global.client');
-    await tryEnd(globalThis.db,     'global.db');
-
-    // best-effort: unref any timers/sockets that might keep the event loop alive
-    const hs = (process._getActiveHandles?.() || []);
-    for (const h of hs) {
+    await tryEnd(globalThis.db, 'global.db');
+    // unref stragglers (timers/sockets)
+    for (const h of (process._getActiveHandles?.() || [])) {
       try {
         if (typeof h.hasRef === 'function' && h.hasRef()) h.unref?.();
         if (h.constructor?.name === 'Timeout')   clearTimeout(h);
