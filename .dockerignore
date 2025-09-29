@@ -1,8 +1,9 @@
+# Default ignores (node)
 node_modules
-npm-debug.log
+npm-debug.log*
 .git
 .gitignore
-.DS_Store
-dev/
-tmp/
-.env
+.env*
+
+# IMPORTANT: include migration scripts even if patterns above exclude folders
+!scripts/**

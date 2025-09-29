@@ -1,101 +1,92 @@
-#!/usr/bin/env node
-
-const { Pool } = require('pg');
+'use strict';
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+const { Client } = require('pg');
 
-// Database connection configuration
-const pool = new Pool({
-  host: process.env.DB_HOST,
-  port: parseInt(process.env.DB_PORT || '5432'),
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false
-});
+const SQL_DIR = path.resolve(__dirname, '..', 'sql');
+const sha1 = (s) => crypto.createHash('sha1').update(s).digest('hex');
 
-// Ensure schema_migrations table exists
-async function ensureMigrationsTable() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS schema_migrations (
-      version text PRIMARY KEY,
-      applied_at timestamptz NOT NULL DEFAULT now()
+function dbConfig() {
+  const url = process.env.DATABASE_URL;
+  const looksTemplated = typeof url === 'string' && url.includes('$');
+  if (url && !looksTemplated) return { connectionString: url, ssl: false };
+  return {
+    host: process.env.DB_HOST || '127.0.0.1',
+    database: process.env.DB_NAME || 'postgres',
+    user: process.env.DB_USER || 'postgres',
+    password: process.env.DB_PASSWORD || '',
+    ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : undefined,
+  };
+}
+
+// Use our own tracker table to avoid legacy collisions
+const MIG_TABLE = 'public.sql_migrations';
+
+async function ensureTable(client) {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS ${MIG_TABLE} (
+      id SERIAL PRIMARY KEY,
+      filename TEXT NOT NULL UNIQUE,
+      sha1 TEXT,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
   `);
-}
-
-// Get list of applied migrations
-async function getAppliedMigrations() {
-  const result = await pool.query('SELECT version FROM schema_migrations ORDER BY version');
-  return new Set(result.rows.map(row => row.version));
-}
-
-// Run a single migration file
-async function runMigration(version, sql) {
-  const client = await pool.connect();
+  // Optional visibility: log presence of legacy table
   try {
-    await client.query('BEGIN');
-    await client.query(sql);
-    await client.query('INSERT INTO schema_migrations (version) VALUES ($1)', [version]);
+    const { rowCount } = await client.query(`
+      SELECT 1 FROM information_schema.tables
+      WHERE table_schema='public' AND table_name='schema_migrations'
+    `);
+    if (rowCount > 0) console.log('[migrate] legacy table public.schema_migrations present (ignored)');
+  } catch { /* ignore */ }
+}
+
+function listSql(dir) {
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.sql')).sort();
+}
+
+async function applied(client, filename) {
+  const { rows } = await client.query(`SELECT 1 FROM ${MIG_TABLE} WHERE filename = $1`, [filename]);
+  return rows.length > 0;
+}
+
+async function apply(client, filename, sqlText) {
+  await client.query('BEGIN');
+  try {
+    await client.query(sqlText);
+    await client.query(`INSERT INTO ${MIG_TABLE}(filename, sha1) VALUES ($1,$2)`, [filename, sha1(sqlText)]);
     await client.query('COMMIT');
-    console.log(`[migrate] applied ${version}`);
-  } catch (error) {
+    console.log('[migrate] applied:', filename);
+  } catch (e) {
     await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
+    throw new Error(`Migration failed in ${filename}: ${e.message}`);
   }
 }
 
-// Main migration function
-async function migrate() {
+(async () => {
+  const client = new Client(dbConfig());
   try {
-    console.log('[migrate] starting migrations...');
-    
-    // Ensure migrations table exists
-    await ensureMigrationsTable();
-    
-    // Get applied migrations
-    const applied = await getAppliedMigrations();
-    
-    // Find all SQL files in sql/ directory
-    const sqlDir = path.join(__dirname, '..', 'sql');
-    if (!fs.existsSync(sqlDir)) {
-      console.log('[migrate] no sql directory found, skipping');
-      return;
+    await client.connect();
+    console.log('[migrate] connected as %s to %s', process.env.DB_USER, process.env.DB_NAME);
+    // Eliminate search_path surprises
+    await client.query('SET search_path TO public');
+    await ensureTable(client);
+    const files = listSql(SQL_DIR);
+    if (files.length === 0) { console.log('[migrate] no SQL files found.'); return; }
+    console.log('[migrate] found:', files.join(', '));
+    for (const f of files) {
+      const sql = fs.readFileSync(path.join(SQL_DIR, f), 'utf8');
+      if (await applied(client, f)) { console.log('[migrate] skip:', f); continue; }
+      await apply(client, f, sql);
     }
-    
-    const files = fs.readdirSync(sqlDir)
-      .filter(file => file.endsWith('.sql'))
-      .sort();
-    
-    for (const file of files) {
-      const version = file.replace('.sql', '');
-      
-      if (applied.has(version)) {
-        console.log(`[migrate] skipping ${file} (already applied)`);
-        continue;
-      }
-      
-      console.log(`[migrate] applying ${file}`);
-      const sqlPath = path.join(sqlDir, file);
-      const sql = fs.readFileSync(sqlPath, 'utf8');
-      
-      await runMigration(version, sql);
-    }
-    
-    console.log('[migrate] migrations completed successfully');
-  } catch (error) {
-    console.error('[migrate] migration failed:', error.message);
-    process.exit(1);
+    console.log('[migrate] all done.');
+  } catch (err) {
+    process.exitCode = 1;
+    console.error('[migrate] ERROR:', err && err.stack || err);
   } finally {
-    await pool.end();
+    try { await client.end(); console.log('[migrate] connection closed'); } catch {}
+    setImmediate(() => process.exit(process.exitCode ?? 0));
   }
-}
-
-// Handle process signals
-process.on('SIGTERM', () => pool.end());
-process.on('SIGINT', () => pool.end());
-
-// Run migrations
-migrate();
+})();

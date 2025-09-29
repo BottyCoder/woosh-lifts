@@ -1,63 +1,145 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -e
 
-# Basic sanity tests for woosh-lifts admin endpoints and SMS integration
-# Usage: BASE=https://your-service.run.app ./scripts/sanity.sh
+# Core SMS Ingestion Sanity Tests
+# Tests /sms/plain with multiple portal shapes and Swathe 2 send routes
 
-BASE="${BASE:-http://localhost:8080}"
-echo "Testing against: $BASE"
+BASE="${BASE:-http://localhost:3000}"
+PASS=0
+FAIL=0
 
-# Test 1: Admin status
-echo "==> Test 1: GET /admin/status"
-curl -sS "$BASE/admin/status" | jq .
-echo
+# Helper functions
+hit() {
+  local method="$1"
+  local url="$2"
+  local body="${3:-}"
+  curl -sS -X "$method" "$BASE$url" \
+    -H 'Content-Type: application/json' \
+    --data-raw "$body"
+}
 
-# Test 2: Create a lift
-echo "==> Test 2: POST /admin/lifts"
-LIFT_RESPONSE=$(curl -sS -X POST "$BASE/admin/lifts" -H 'Content-Type: application/json' \
-  --data '{"msisdn":"27821110000","site_name":"Test Tower","building":"Block A","notes":"Sanity test lift"}')
-echo "$LIFT_RESPONSE" | jq .
-LIFT_ID=$(echo "$LIFT_RESPONSE" | jq -r '.data.id')
-echo "Created lift ID: $LIFT_ID"
-echo
+assert_contains() {
+  local hay="$1"
+  local needle="$2"
+  if echo "$hay" | grep -q "$needle"; then
+    PASS=$((PASS+1))
+    echo "✓ PASS: Found '$needle'"
+  else
+    echo "✗ FAIL: Missing '$needle'"
+    echo "Response: $hay"
+    FAIL=$((FAIL+1))
+  fi
+}
 
-# Test 3: Create a contact and link it
-echo "==> Test 3: POST /admin/contacts"
-CONTACT_RESPONSE=$(curl -sS -X POST "$BASE/admin/contacts" -H 'Content-Type: application/json' \
-  --data '{"display_name":"Test Security","primary_msisdn":"27825550000","email":"security@test.com","role":"security"}')
-echo "$CONTACT_RESPONSE" | jq .
-CONTACT_ID=$(echo "$CONTACT_RESPONSE" | jq -r '.data.id')
-echo "Created contact ID: $CONTACT_ID"
-echo
+phase() {
+  echo ""
+  echo "=========================================="
+  echo "---- $1 ----"
+  echo "=========================================="
+}
 
-echo "==> Test 3b: Link contact to lift"
-LINK_RESPONSE=$(curl -sS -X POST "$BASE/admin/lifts/$LIFT_ID/contacts" -H 'Content-Type: application/json' \
-  --data "{\"contact_id\":\"$CONTACT_ID\",\"relation\":\"security\"}")
-echo "$LINK_RESPONSE" | jq .
-echo
+# Test if jq is available for JSON parsing
+if command -v jq >/dev/null 2>&1; then
+  HAS_JQ=true
+  echo "✓ jq available for JSON parsing"
+else
+  HAS_JQ=false
+  echo "⚠ jq not available, using grep for assertions"
+fi
 
-# Test 4: Resolve lift (should show linked contact)
-echo "==> Test 4: GET /admin/resolve/lift?msisdn=27821110000"
-curl -sS "$BASE/admin/resolve/lift?msisdn=27821110000" | jq .
-echo
+# P1: Core SMS ingestion (/sms/plain with all portal shapes)
+phase "P1 Core SMS Ingestion"
 
-# Test 5: SMS with provider shape A
-echo "==> Test 5: POST /sms/plain (Provider Shape A)"
-SMS_RESPONSE_A=$(curl -sS -X POST "$BASE/sms/plain" -H 'Content-Type: application/json' \
-  --data '{"id":"smk-001","phoneNumber":"+27821110000","incomingData":"Emergency help needed","provider":"operatorX"}')
-echo "$SMS_RESPONSE_A" | jq .
-echo
+echo "Testing Shape A: msisdn + text..."
+R1=$(hit POST /sms/plain '{"msisdn":"+27824537125","text":"Hello from Shape A"}')
+assert_contains "$R1" '"ok":true'
 
-# Test 6: SMS with provider shape B
-echo "==> Test 6: POST /sms/plain (Provider Shape B)"
-SMS_RESPONSE_B=$(curl -sS -X POST "$BASE/sms/plain" -H 'Content-Type: application/json' \
-  --data '{"from":"+27821110000","text":"Another test message","id":"smk-002"}')
-echo "$SMS_RESPONSE_B" | jq .
-echo
+echo "Testing Shape B: phoneNumber + incomingData..."
+R2=$(hit POST /sms/plain '{"phoneNumber":"+27824537125","incomingData":"Hello from Shape B"}')
+assert_contains "$R2" '"ok":true'
 
-# Test 7: Messages pagination
-echo "==> Test 7: GET /admin/messages?lift_id=$LIFT_ID"
-curl -sS "$BASE/admin/messages?lift_id=$LIFT_ID&limit=10" | jq .
-echo
+echo "Testing Shape C: from + text..."
+R3=$(hit POST /sms/plain '{"from":"+27824537125","text":"Hello from Shape C"}')
+assert_contains "$R3" '"ok":true'
 
-echo "==> Sanity tests completed!"
+echo "Testing Shape C: from + body..."
+R4=$(hit POST /sms/plain '{"from":"+27824537125","body":"Hello from Shape C with body"}')
+assert_contains "$R4" '"ok":true'
+
+# P2: Validation failures
+phase "P2 Validation Error Tests"
+
+echo "Testing missing phone number..."
+V1=$(hit POST /sms/plain '{"text":"Hello world"}' || true)
+assert_contains "$V1" '"error"'
+
+echo "Testing missing text..."
+V2=$(hit POST /sms/plain '{"msisdn":"+27824537125"}' || true)
+assert_contains "$V2" '"error"'
+
+echo "Testing invalid format..."
+V3=$(hit POST /sms/plain '{"invalid":"format"}' || true)
+assert_contains "$V3" '"error"'
+
+# P3: Health check
+phase "P3 Health Check"
+
+echo "Testing SMS routes health..."
+H1=$(hit GET /sms/health)
+assert_contains "$H1" '"ok":true'
+assert_contains "$H1" '"service":"sms-routes"'
+
+# P4: Send routes (Swathe 2)
+phase "P4 Send Routes - WhatsApp Bridge"
+
+echo "Testing text message send..."
+S1=$(hit POST /send/text '{"to":"+27824537125","text":"Hello from sanity test"}')
+assert_contains "$S1" '"ok":true'
+assert_contains "$S1" '"message_id"'
+
+echo "Testing template message send..."
+S2=$(hit POST /send/template '{"to":"+27824537125","template_name":"test_template","template_language":"en","template_components":[{"type":"body","parameters":[{"type":"text","text":"Test"}]}]}')
+assert_contains "$S2" '"ok":true'
+assert_contains "$S2" '"message_id"'
+
+echo "Testing breaker status..."
+B1=$(hit GET /send/breaker)
+assert_contains "$B1" '"ok":true'
+assert_contains "$B1" '"breaker"'
+
+# P5: Retry and breaker behavior (Swathe 2)
+phase "P5 Retry and Breaker Behavior"
+
+echo "Testing forced error (if DEV_FORCE_BRIDGE_ERROR is set)..."
+if [ -n "${DEV_FORCE_BRIDGE_ERROR:-}" ]; then
+  S3=$(hit POST /send/text '{"to":"+27824537125","text":"Force error test"}' || true)
+  # Should either succeed or fail gracefully
+  echo "Forced error test completed"
+fi
+
+echo "Testing message status endpoint..."
+if [ -n "${S1:-}" ]; then
+  # Extract message ID from previous response (simplified)
+  MSG_ID=$(echo "$S1" | grep -o '"message_id":"[^"]*"' | cut -d'"' -f4 || echo "test-message-id")
+  if [ "$MSG_ID" != "test-message-id" ]; then
+    S4=$(hit GET "/send/status/$MSG_ID")
+    assert_contains "$S4" '"ok":true'
+    assert_contains "$S4" '"message"'
+  fi
+fi
+
+# Summary
+phase "Test Summary"
+
+echo ""
+echo "=========================================="
+echo "RESULTS: PASS=$PASS FAIL=$FAIL"
+echo "=========================================="
+
+if [ "$FAIL" -eq 0 ]; then
+  echo "🎉 All tests passed! Core SMS ingestion and send routes are working correctly."
+  exit 0
+else
+  echo "❌ $FAIL test(s) failed. Check the output above for details."
+  exit 1
+fi

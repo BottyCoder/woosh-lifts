@@ -10,6 +10,9 @@ const { requireString, optionalString, requireEnum, patterns, createValidationEr
 const { requestLogger } = require("./mw/log");
 const { errorHandler } = require("./mw/error");
 const { getPagination, paginateQuery } = require("./pagination");
+const smsRoutes = require('./routes/sms');
+const sendRoutes = require("./routes/send");
+const { startRetryProcessor } = require("./lib/retryQueue");
 
 const BRIDGE_BASE_URL = process.env.BRIDGE_BASE_URL || "https://wa.woosh.ai";
 const BRIDGE_API_KEY  = process.env.BRIDGE_API_KEY || "";
@@ -22,6 +25,8 @@ const SMS_INBOUND_TOPIC = process.env.SMS_INBOUND_TOPIC || "sms-inbound";
 
 // Initialize Pub/Sub
 const pubsub = new PubSub();
+
+// Migrations are now handled in root server.js
 
 const app = express();
 // no global express.json(); we need raw bytes for HMAC on specific routes
@@ -64,6 +69,12 @@ loadRegistry();
 
 app.get("/", (_req, res) => res.status(200).send("woosh-lifts: ok"));
 
+// Mount SMS routes (core functionality only)
+app.use('/sms', smsRoutes);
+
+// Mount send routes
+app.use('/send', sendRoutes);
+
 // Admin status (enriched, no secrets)
 app.get('/admin/status', async (req, res) => {
   try {
@@ -92,7 +103,7 @@ app.get('/admin/status', async (req, res) => {
     // Get build info
     const build = {
       node: process.version,
-      commit: process.env.APP_BUILD || process.env.GIT_SHA || 'unknown'
+      commit: process.env.COMMIT_SHA || process.env.APP_BUILD || process.env.GIT_SHA || 'unknown'
     };
     
     res.json({
@@ -674,215 +685,11 @@ app.all("/sms/portal", express.raw({ type: "*/*" }), (req, res) => {
 });
 
 // -------- SMSPortal-friendly plain endpoint (no HMAC) --------
-// Accepts JSON or form-encoded; maps their field names.
-const urlencoded = require("express").urlencoded;
-const json = require("express").json;
+// Note: /sms/plain is now handled by the SMS routes module
+// This provides backward compatibility while using the new normalization system
 
 // Ensure the in-memory "latest" buffer exists even if /sms/inbound hasn't run yet
 if (typeof global.LAST_INBOUND === "undefined") global.LAST_INBOUND = null;
-
-app.post(
-  "/sms/plain",
-  urlencoded({ extended: false }),
-  json({ type: ["application/json", "application/*+json"] }),
-  async (req, res) => {
-    try {
-      const b = req.body || {};
-
-      // helper
-      const s = v => (v === null || v === undefined) ? "" : String(v).trim();
-
-      // ID
-      const smsId =
-        s(b.id) ||
-        s(b.Id) ||
-        `sms-${Date.now()}`;
-
-      // Detect provider shape and normalize accordingly
-      let providerShape = 'unknown';
-      let rawPhone, incoming;
-      
-      // Provider Shape A: { "id": "op-123", "phoneNumber": "+2782...", "incomingData": "help", "provider": "..." }
-      if (b.phoneNumber && b.incomingData) {
-        providerShape = 'A';
-        rawPhone = s(b.phoneNumber);
-        incoming = s(b.incomingData);
-      }
-      // Provider Shape B: { "from": "+2782...", "text": "help", "id": "..." }
-      else if (b.from && b.text) {
-        providerShape = 'B';
-        rawPhone = s(b.from);
-        incoming = s(b.text);
-      }
-      // Fallback to existing logic
-      else {
-        rawPhone =
-          s(b.phone) ||
-          s(b.phoneNumber) ||
-          s(b.to) ||
-          s(b.msisdn);
-
-        incoming =
-          s(b.text) ||
-          s(b.incomingData) ||
-          s(b.IncomingData) ||
-          s(b.message) ||
-          s(b.body);
-      }
-
-      const toDigits = rawPhone.replace(/[^\d]/g, "");
-      const from_msisdn = toDigits;
-
-      // Cap to 1024 for template param
-      if (incoming.length > 1024) incoming = incoming.slice(0, 1024);
-
-      // Enhanced metadata with provider shape info
-      const meta = {
-        provider_shape: providerShape,
-        original_from: b.from || b.phoneNumber,
-        original_body: b.text || b.incomingData,
-        mcc: s(b.mcc || b.Mcc),
-        mnc: s(b.mnc || b.Mnc),
-        sc:  s(b.sc  || b.Sc  || b.shortcode),
-        keyword: s(b.keyword || b.Keyword),
-        incomingUtc: s(b.incomingUtc || b.IncomingUtc || b.incomingDateTime || b.IncomingDateTime),
-        provider: s(b.provider)
-      };
-
-      // Basic validation (same error shape as before, but now tolerant)
-      if (!toDigits || !incoming) {
-        return res.status(400).json({ ok: false, error: "missing phone/text" });
-      }
-
-      // ========== DATABASE INTEGRATION ==========
-      
-      // Resolve lift (auto-create if missing)
-      let liftResult = await query('SELECT id FROM lifts WHERE msisdn = $1', [from_msisdn]);
-      let lift_id, lift_created = false;
-      
-      if (liftResult.rows.length === 0) {
-        liftResult = await query('INSERT INTO lifts (msisdn) VALUES ($1) RETURNING id', [from_msisdn]);
-        lift_created = true;
-      }
-      lift_id = liftResult.rows[0].id;
-
-      // Insert inbound message
-      const messageResult = await query(`
-        INSERT INTO messages (channel, provider_id, direction, from_msisdn, to_msisdn, body, meta)
-        VALUES ('sms', $1, 'in', $2, $3, $4, $5)
-        RETURNING id
-      `, [smsId, from_msisdn, meta.sc || null, incoming, JSON.stringify(meta)]);
-
-      // Emit events
-      await query(`
-        INSERT INTO events (type, payload, ts)
-        VALUES ('sms_received', $1, now())
-      `, [JSON.stringify({ from_msisdn, provider_id: smsId })]);
-
-      await query(`
-        INSERT INTO events (lift_id, type, payload, ts)
-        VALUES ($1, 'lift_resolved', $2, now())
-      `, [lift_id, JSON.stringify({ lift_msisdn: from_msisdn, created: lift_created })]);
-
-      // Get contacts count for response
-      const contactsResult = await query(`
-        SELECT COUNT(*) as count FROM lift_contacts WHERE lift_id = $1
-      `, [lift_id]);
-      const contacts_count = parseInt(contactsResult.rows[0].count);
-
-      // log normalized inbound once (keeps existing log style)
-      console.log(JSON.stringify({
-        event: "sms_received",
-        sms_id: smsId,
-        to: toDigits,
-        text_len: incoming.length,
-        ...meta
-      }));
-
-      // --- Template-first insert (non-breaking) ---
-
-      let templateAttempted = false;
-      if (BRIDGE_API_KEY && BRIDGE_TEMPLATE_NAME && toDigits) {
-        templateAttempted = true;
-        try {
-          const components = [{ type: "body", parameters: [{ type: "text", text: incoming }]}];
-          const graph = await sendTemplateViaBridge({
-            baseUrl: BRIDGE_BASE_URL,
-            apiKey: BRIDGE_API_KEY,
-            to: toDigits,
-            name: BRIDGE_TEMPLATE_NAME,
-            languageCode: (BRIDGE_TEMPLATE_LANG === "en" ? "en_US" : BRIDGE_TEMPLATE_LANG),
-            components
-          });
-          const wa_id = graph?.messages?.[0]?.id || null;
-          console.log(JSON.stringify({ event: "wa_template_ok", sms_id: smsId, to: toDigits, templateName: BRIDGE_TEMPLATE_NAME, lang: BRIDGE_TEMPLATE_LANG, wa_id, text_len: incoming.length }));
-          
-          // Return with database info
-          return res.status(200).json({ 
-            ok: true, 
-            forwarded: true, 
-            sms_id: smsId, 
-            type: "template",
-            lift_id,
-            msisdn: from_msisdn,
-            contacts_count
-          });
-        } catch (e) {
-          console.log(JSON.stringify({
-            event: "wa_template_fail",
-            sms_id: smsId,
-            to: toDigits,
-            templateName: BRIDGE_TEMPLATE_NAME,
-            lang: BRIDGE_TEMPLATE_LANG,
-            status: e?.status || 0,
-            body: e?.body || String(e)
-          }));
-        }
-      }
-      // --- End template-first insert ---
-
-      const smsEvent = {
-        id: smsId,
-        from: toDigits,
-        shortcode: meta.sc,
-        message: incoming,
-        received_at: new Date().toISOString(),
-        raw: b
-      };
-
-      // Store in memory for /api/inbound/latest
-      global.LAST_INBOUND = smsEvent;
-
-      // Publish to Pub/Sub for processing by router
-      const topic = pubsub.topic(SMS_INBOUND_TOPIC);
-      const messageId = await topic.publishMessage({
-        data: Buffer.from(JSON.stringify(smsEvent)),
-        attributes: {
-          id: smsId,
-          from: toDigits,
-          timestamp: new Date().toISOString()
-        }
-      });
-
-      console.log("[plain] Published to Pub/Sub:", messageId);
-      
-      console.log(JSON.stringify({ event: "wa_send_ok", sms_id: smsId, to: toDigits, text_len: incoming.length, fallback: true }));
-      
-      // Return with database info
-      return res.status(200).json({ 
-        ok: true, 
-        published: true, 
-        message_id: messageId,
-        lift_id,
-        msisdn: from_msisdn,
-        contacts_count
-      });
-    } catch (e) {
-      console.error("[plain] error", e);
-      return res.status(500).json({ error: "server_error" });
-    }
-  }
-);
 
 // --- latest inbound reader (always available) ---
 app.get("/api/inbound/latest", (_req, res) => {
@@ -892,3 +699,37 @@ app.get("/api/inbound/latest", (_req, res) => {
 
 // Error handling middleware (must be last)
 app.use(errorHandler);
+
+// Server startup
+const PORT = parseInt(process.env.PORT || '8080', 10);
+const HOST = '0.0.0.0';
+
+async function start() {
+  try {
+    // run migrations first (ok; they're quick)
+    await runMigrations?.();
+
+    // start background processors without blocking startup
+    try {
+      startRetryProcessor?.().catch(err =>
+        console.error(JSON.stringify({ level: 'error', msg: 'retry_start_error', error: err?.message, stack: err?.stack }))
+      );
+    } catch (e) {
+      console.error(JSON.stringify({ level: 'error', msg: 'retry_start_throw', error: e?.message, stack: e?.stack }));
+    }
+
+    const server = app.listen(PORT, HOST, () => {
+      console.log(JSON.stringify({ level: 'info', msg: 'server_listening', port: PORT, host: HOST }));
+    });
+    return server;
+  } catch (err) {
+    console.error(JSON.stringify({ level: 'error', msg: 'boot_error', error: err?.message, stack: err?.stack }));
+    process.exit(1);
+  }
+}
+
+if (require.main === module) {
+  start();
+}
+
+module.exports = { app, start };
