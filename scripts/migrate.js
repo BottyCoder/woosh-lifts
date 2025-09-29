@@ -1,106 +1,103 @@
 'use strict';
-// Auto-discovering migration runner:
-// 1) Try common module paths
-// 2) If not found, scan /app up to depth 3 for a file that exports runMigrations()
-// 3) Run migrations
-// 4) Close handles and hard-exit so Cloud Run marks the job Completed
+/**
+ * Minimal SQL migration runner for Cloud Run Jobs.
+ * - Reads .sql files in /app/sql in lexicographic order.
+ * - Tracks applied files in public.schema_migrations(name primary key, applied_at).
+ * - Uses DATABASE_URL if present (socket path recommended), otherwise env vars.
+ * - Always closes DB handles and exits (so the Job completes).
+ */
 
 const fs = require('fs');
 const path = require('path');
-const tryRequire = (p) => { try { return require(p); } catch { return null; } };
+const crypto = require('crypto');
+const { Client } = require('pg');
 
-const common = [
-  '../src/lib/migrateRunner',
-  '../src/db/migrateRunner',
-  '../src/migrateRunner',
-  './migrateRunner',
-  '../lib/migrateRunner',
-  '../migrateRunner',
-  './lib/migrateRunner',
-  '../dist/lib/migrateRunner',
-  '../build/lib/migrateRunner',
-  '../dist/migrateRunner',
-  '../build/migrateRunner',
-];
+const SQL_DIR = path.resolve(__dirname, '..', 'sql');
 
-let mod = null, chosen = null;
-for (const p of common) {
-  const m = tryRequire(p);
-  if (m && typeof m.runMigrations === 'function') { mod = m; chosen = p; break; }
+function getDatabaseConfig() {
+  const url = process.env.DATABASE_URL;
+  if (url) return { connectionString: url, ssl: false };
+  // Fallback if DATABASE_URL isn't set (kept for local runs)
+  const host = process.env.DB_HOST || '127.0.0.1';
+  const database = process.env.DB_NAME || 'postgres';
+  const user = process.env.DB_USER || 'postgres';
+  const password = process.env.DB_PASSWORD || '';
+  return { host, database, user, password, ssl: false };
 }
 
-if (!mod) {
-  // filesystem search: look for candidates named *migrate*.* under /app (depth <= 3)
-  const root = '/app';
-  const hits = [];
-  const walk = (dir, depth = 0) => {
-    if (depth > 3) return;
-    let list = [];
-    try { list = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-    for (const d of list) {
-      const p = path.join(dir, d.name);
-      if (d.isDirectory()) { walk(p, depth + 1); continue; }
-      if (!/\.(js|cjs|mjs|ts)$/.test(p)) continue;
-      if (/migrate|runner|knexfile|prisma|sequelize/i.test(p)) hits.push(p);
-    }
-  };
-  walk(root, 0);
-  for (const file of hits) {
-    const rel = path.relative(__dirname, file).replace(/\\/g, '/');
-    const test = rel.startsWith('.') ? rel : './' + rel;
-    const m = tryRequire(test);
-    if (m && typeof m.runMigrations === 'function') { mod = m; chosen = test; break; }
-  }
+async function ensureMigrationsTable(client) {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS public.schema_migrations (
+      name TEXT PRIMARY KEY,
+      sha1 TEXT,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
 }
 
-if (!mod) {
-  console.error('[migrate] Could not locate runMigrations() in common paths or filesystem scan.');
-  console.error('[migrate] Searched common:', common.join(', '));
-  console.error('[migrate] Searched under /app (depth 3) for files matching /(migrate|runner|knexfile|prisma|sequelize)/');
-  process.exit(1);
+function listSqlFiles(dir) {
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir)
+    .filter(f => f.toLowerCase().endsWith('.sql'))
+    .sort((a, b) => a.localeCompare(b, 'en'));
 }
-console.log(`[migrate] using migration module: ${chosen}`);
 
-const { runMigrations, pool, client, db } = mod;
+function sha1(buf) {
+  return crypto.createHash('sha1').update(buf).digest('hex');
+}
 
-const tryEnd = async (obj, label) => {
+async function alreadyApplied(client, name) {
+  const { rows } = await client.query('SELECT 1 FROM public.schema_migrations WHERE name = $1', [name]);
+  return rows.length > 0;
+}
+
+async function applyFile(client, name, sqlText) {
+  await client.query('BEGIN');
   try {
-    if (obj && typeof obj.end === 'function') {
-      await obj.end();
-      console.log(`[migrate] closed ${label}`);
-    }
-  } catch (e) {
-    console.error(`[migrate] close ${label} error:`, e?.message || e);
-  }
-};
-
-(async () => {
-  try {
-    console.log('[migrate] starting migrations…');
-    await runMigrations();
-    console.log('[migrate] All migrations completed successfully');
-    process.exitCode = 0;
+    await client.query(sqlText);
+    await client.query('INSERT INTO public.schema_migrations(name, sha1) VALUES ($1, $2)', [name, sha1(sqlText)]);
+    await client.query('COMMIT');
+    console.log(`[migrate] applied: ${name}`);
   } catch (err) {
-    console.error('[migrate] Failed:', err);
-    process.exitCode = 1;
-  } finally {
-    await tryEnd(pool, 'pool');
-    await tryEnd(client, 'client');
-    await tryEnd(db, 'db');
-    await tryEnd(globalThis.pool, 'global.pool');
-    await tryEnd(globalThis.client, 'global.client');
-    await tryEnd(globalThis.db, 'global.db');
-    // unref stragglers (timers/sockets)
-    for (const h of (process._getActiveHandles?.() || [])) {
-      try {
-        if (typeof h.hasRef === 'function' && h.hasRef()) h.unref?.();
-        if (h.constructor?.name === 'Timeout')   clearTimeout(h);
-        if (h.constructor?.name === 'Immediate') clearImmediate(h);
-        if (h.constructor?.name === 'Interval')  clearInterval(h);
-        if (typeof h.close   === 'function') h.close();
-        if (typeof h.destroy === 'function') h.destroy();
-      } catch {}
-    }
-    setImmediate(() => { console.log('[migrate] exiting now'); process.exit(process.exitCode ?? 1); });
+    await client.query('ROLLBACK');
+    throw new Error(`Migration failed in ${name}: ${err.message}`);
   }
-})();
+}
+
+async function main() {
+  const cfg = getDatabaseConfig();
+  const client = new Client(cfg);
+  try {
+    console.log('[migrate] connecting…');
+    await client.connect();
+    await ensureMigrationsTable(client);
+
+    const files = listSqlFiles(SQL_DIR);
+    if (files.length === 0) {
+      console.log('[migrate] no SQL files found, nothing to do.');
+      return;
+    }
+    console.log('[migrate] found SQL files:', files.join(', '));
+
+    for (const file of files) {
+      const name = file;
+      if (await alreadyApplied(client, name)) {
+        console.log(`[migrate] skip (already applied): ${name}`);
+        continue;
+        }
+      const full = path.join(SQL_DIR, file);
+      const sqlText = fs.readFileSync(full, 'utf8');
+      await applyFile(client, name, sqlText);
+    }
+    console.log('[migrate] all done.');
+  } finally {
+    try { await client.end(); console.log('[migrate] connection closed'); } catch {}
+  }
+}
+
+main()
+  .then(() => { setImmediate(() => process.exit(0)); })
+  .catch(err => {
+    console.error('[migrate] ERROR:', err && err.stack || err);
+    setImmediate(() => process.exit(1));
+  });
