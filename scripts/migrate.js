@@ -1,103 +1,77 @@
 'use strict';
-/**
- * Minimal SQL migration runner for Cloud Run Jobs.
- * - Reads .sql files in /app/sql in lexicographic order.
- * - Tracks applied files in public.schema_migrations(name primary key, applied_at).
- * - Uses DATABASE_URL if present (socket path recommended), otherwise env vars.
- * - Always closes DB handles and exits (so the Job completes).
- */
-
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { Client } = require('pg');
 
 const SQL_DIR = path.resolve(__dirname, '..', 'sql');
+const sha1 = (s) => crypto.createHash('sha1').update(s).digest('hex');
 
-function getDatabaseConfig() {
+function dbConfig() {
   const url = process.env.DATABASE_URL;
   if (url) return { connectionString: url, ssl: false };
-  // Fallback if DATABASE_URL isn't set (kept for local runs)
-  const host = process.env.DB_HOST || '127.0.0.1';
-  const database = process.env.DB_NAME || 'postgres';
-  const user = process.env.DB_USER || 'postgres';
-  const password = process.env.DB_PASSWORD || '';
-  return { host, database, user, password, ssl: false };
+  return {
+    host: process.env.DB_HOST || '127.0.0.1',
+    database: process.env.DB_NAME || 'postgres',
+    user: process.env.DB_USER || 'postgres',
+    password: process.env.DB_PASSWORD || '',
+    ssl: false,
+  };
 }
 
-async function ensureMigrationsTable(client) {
+async function ensureTable(client) {
   await client.query(`
     CREATE TABLE IF NOT EXISTS public.schema_migrations (
       name TEXT PRIMARY KEY,
-      sha1 TEXT,
+      sha1 TEXT NOT NULL,
       applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
   `);
 }
 
-function listSqlFiles(dir) {
+function listSql(dir) {
   if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir)
-    .filter(f => f.toLowerCase().endsWith('.sql'))
-    .sort((a, b) => a.localeCompare(b, 'en'));
+  return fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.sql')).sort();
 }
 
-function sha1(buf) {
-  return crypto.createHash('sha1').update(buf).digest('hex');
-}
-
-async function alreadyApplied(client, name) {
+async function applied(client, name) {
   const { rows } = await client.query('SELECT 1 FROM public.schema_migrations WHERE name = $1', [name]);
   return rows.length > 0;
 }
 
-async function applyFile(client, name, sqlText) {
+async function apply(client, name, sqlText) {
   await client.query('BEGIN');
   try {
     await client.query(sqlText);
-    await client.query('INSERT INTO public.schema_migrations(name, sha1) VALUES ($1, $2)', [name, sha1(sqlText)]);
+    await client.query('INSERT INTO public.schema_migrations(name, sha1) VALUES ($1,$2)', [name, sha1(sqlText)]);
     await client.query('COMMIT');
-    console.log(`[migrate] applied: ${name}`);
-  } catch (err) {
+    console.log('[migrate] applied:', name);
+  } catch (e) {
     await client.query('ROLLBACK');
-    throw new Error(`Migration failed in ${name}: ${err.message}`);
+    throw new Error(`Migration failed in ${name}: ${e.message}`);
   }
 }
 
-async function main() {
-  const cfg = getDatabaseConfig();
-  const client = new Client(cfg);
+(async () => {
+  const client = new Client(dbConfig());
   try {
     console.log('[migrate] connecting…');
     await client.connect();
-    await ensureMigrationsTable(client);
-
-    const files = listSqlFiles(SQL_DIR);
-    if (files.length === 0) {
-      console.log('[migrate] no SQL files found, nothing to do.');
-      return;
-    }
-    console.log('[migrate] found SQL files:', files.join(', '));
-
-    for (const file of files) {
-      const name = file;
-      if (await alreadyApplied(client, name)) {
-        console.log(`[migrate] skip (already applied): ${name}`);
-        continue;
-        }
-      const full = path.join(SQL_DIR, file);
-      const sqlText = fs.readFileSync(full, 'utf8');
-      await applyFile(client, name, sqlText);
+    await ensureTable(client);
+    const files = listSql(SQL_DIR);
+    if (files.length === 0) { console.log('[migrate] no SQL files found.'); return; }
+    console.log('[migrate] found:', files.join(', '));
+    for (const f of files) {
+      if (await applied(client, f)) { console.log('[migrate] skip:', f); continue; }
+      const sql = fs.readFileSync(path.join(SQL_DIR, f), 'utf8');
+      await apply(client, f, sql);
     }
     console.log('[migrate] all done.');
+  } catch (err) {
+    console.error('[migrate] ERROR:', err && err.stack || err);
+    process.exitCode = 1;
   } finally {
     try { await client.end(); console.log('[migrate] connection closed'); } catch {}
+    setImmediate(() => process.exit(process.exitCode ?? 0));
   }
-}
-
-main()
-  .then(() => { setImmediate(() => process.exit(0)); })
-  .catch(err => {
-    console.error('[migrate] ERROR:', err && err.stack || err);
-    setImmediate(() => process.exit(1));
-  });
+})();
