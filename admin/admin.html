@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Woosh Lifts Admin</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f8fafc;
+            color: #334155;
+            line-height: 1.6;
+        }
+
+        .header {
+            background: white;
+            border-bottom: 1px solid #e2e8f0;
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .header h1 {
+            color: #1e293b;
+            font-size: 1.5rem;
+            font-weight: 600;
+        }
+
+        .status-pill {
+            padding: 0.5rem 1rem;
+            border-radius: 9999px;
+            font-size: 0.875rem;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .status-online {
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .status-offline {
+            background: #fef2f2;
+            color: #dc2626;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .search-section {
+            background: white;
+            border-radius: 0.5rem;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+            color: #374151;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid #d1d5db;
+            border-radius: 0.375rem;
+            font-size: 1rem;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        .btn {
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 0.375rem;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: #3b82f6;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #2563eb;
+        }
+
+        .btn-secondary {
+            background: #6b7280;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #4b5563;
+        }
+
+        .btn-danger {
+            background: #ef4444;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+
+        .btn-success {
+            background: #10b981;
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #059669;
+        }
+
+        .tabs {
+            display: flex;
+            border-bottom: 1px solid #e2e8f0;
+            margin-bottom: 2rem;
+        }
+
+        .tab {
+            padding: 1rem 2rem;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .tab.active {
+            color: #3b82f6;
+            border-bottom-color: #3b82f6;
+        }
+
+        .tab:hover {
+            color: #3b82f6;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .card {
+            background: white;
+            border-radius: 0.5rem;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .card h2 {
+            margin-bottom: 1.5rem;
+            color: #1e293b;
+            font-size: 1.25rem;
+            font-weight: 600;
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+
+        .form-row-3 {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 1rem;
+        }
+
+        .contact-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem;
+            border: 1px solid #e2e8f0;
+            border-radius: 0.375rem;
+            margin-bottom: 0.5rem;
+            background: #f8fafc;
+        }
+
+        .contact-info {
+            flex: 1;
+        }
+
+        .contact-name {
+            font-weight: 500;
+            color: #1e293b;
+        }
+
+        .contact-details {
+            font-size: 0.875rem;
+            color: #6b7280;
+            margin-top: 0.25rem;
+        }
+
+        .message-item {
+            padding: 1rem;
+            border: 1px solid #e2e8f0;
+            border-radius: 0.375rem;
+            margin-bottom: 0.5rem;
+            background: #f8fafc;
+        }
+
+        .message-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+
+        .message-direction {
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.25rem;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+
+        .direction-in {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+
+        .direction-out {
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .message-time {
+            font-size: 0.875rem;
+            color: #6b7280;
+        }
+
+        .message-body {
+            color: #374151;
+        }
+
+        .alert {
+            padding: 1rem;
+            border-radius: 0.375rem;
+            margin-bottom: 1rem;
+        }
+
+        .alert-error {
+            background: #fef2f2;
+            color: #dc2626;
+            border: 1px solid #fecaca;
+        }
+
+        .alert-success {
+            background: #f0fdf4;
+            color: #166534;
+            border: 1px solid #bbf7d0;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 2rem;
+            color: #6b7280;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 3rem;
+            color: #6b7280;
+        }
+
+        .empty-state h3 {
+            margin-bottom: 0.5rem;
+            color: #374151;
+        }
+
+        @media (max-width: 768px) {
+            .form-row, .form-row-3 {
+                grid-template-columns: 1fr;
+            }
+            
+            .container {
+                padding: 1rem;
+            }
+            
+            .header {
+                padding: 1rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Woosh Lifts Admin</h1>
+        <div id="status-pill" class="status-pill status-offline">
+            <div class="status-dot"></div>
+            <span>Checking...</span>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="search-section">
+            <div class="form-group">
+                <label for="msisdn-input">MSISDN (Mobile Number)</label>
+                <input type="text" id="msisdn-input" placeholder="27824537125" />
+            </div>
+            <button class="btn btn-primary" onclick="resolveLift()">Resolve Lift</button>
+        </div>
+
+        <div id="lift-info" style="display: none;">
+            <div class="card">
+                <h2>Lift Information</h2>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="site-name">Site Name</label>
+                        <input type="text" id="site-name" />
+                    </div>
+                    <div class="form-group">
+                        <label for="building">Building</label>
+                        <input type="text" id="building" />
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="notes">Notes</label>
+                    <input type="text" id="notes" />
+                </div>
+                <button class="btn btn-success" onclick="saveLift()">Save Lift</button>
+            </div>
+
+            <div class="tabs">
+                <div class="tab active" onclick="switchTab('contacts')">Contacts</div>
+                <div class="tab" onclick="switchTab('messages')">Messages</div>
+            </div>
+
+            <div id="contacts-tab" class="tab-content active">
+                <div class="card">
+                    <h2>Contacts</h2>
+                    <div id="contacts-list"></div>
+                    
+                    <div style="margin-top: 2rem; padding-top: 2rem; border-top: 1px solid #e2e8f0;">
+                        <h3 style="margin-bottom: 1rem;">Add/Edit Contact</h3>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="contact-name">Display Name</label>
+                                <input type="text" id="contact-name" />
+                            </div>
+                            <div class="form-group">
+                                <label for="contact-msisdn">MSISDN</label>
+                                <input type="text" id="contact-msisdn" />
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="contact-email">Email</label>
+                                <input type="email" id="contact-email" />
+                            </div>
+                            <div class="form-group">
+                                <label for="contact-role">Role</label>
+                                <input type="text" id="contact-role" placeholder="e.g., security, tenant, manager" />
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="contact-relation">Relation to Lift</label>
+                            <input type="text" id="contact-relation" placeholder="e.g., security, tenant, manager" />
+                        </div>
+                        <button class="btn btn-primary" onclick="addContact()">Add/Update Contact & Link</button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="messages-tab" class="tab-content">
+                <div class="card">
+                    <h2>Recent Messages</h2>
+                    <div id="messages-list"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Configuration
+        const BASE_URL = 'https://woosh-lifts-oqodqtnlma-bq.a.run.app';
+        
+        // State
+        let currentLift = null;
+        let currentContacts = [];
+        let currentMessages = [];
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            checkStatus();
+            
+            // Allow Enter key to resolve lift
+            document.getElementById('msisdn-input').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    resolveLift();
+                }
+            });
+        });
+
+        // Status check
+        async function checkStatus() {
+            try {
+                const response = await fetch(`${BASE_URL}/admin/status`);
+                const data = await response.json();
+                
+                const statusPill = document.getElementById('status-pill');
+                if (data.ok && data.db) {
+                    statusPill.className = 'status-pill status-online';
+                    statusPill.innerHTML = '<div class="status-dot"></div><span>Online</span>';
+                } else {
+                    statusPill.className = 'status-pill status-offline';
+                    statusPill.innerHTML = '<div class="status-dot"></div><span>Offline</span>';
+                }
+            } catch (error) {
+                const statusPill = document.getElementById('status-pill');
+                statusPill.className = 'status-pill status-offline';
+                statusPill.innerHTML = '<div class="status-dot"></div><span>Offline</span>';
+            }
+        }
+
+        // Tab switching
+        function switchTab(tabName) {
+            // Update tab buttons
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            // Update tab content
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+            document.getElementById(`${tabName}-tab`).classList.add('active');
+            
+            // Load content if needed
+            if (tabName === 'messages' && currentLift) {
+                loadMessages();
+            }
+        }
+
+        // Resolve lift by MSISDN
+        async function resolveLift() {
+            const msisdn = document.getElementById('msisdn-input').value.trim();
+            if (!msisdn) {
+                showAlert('Please enter an MSISDN', 'error');
+                return;
+            }
+
+            try {
+                showAlert('Resolving lift...', 'success');
+                
+                const response = await fetch(`${BASE_URL}/admin/resolve/lift?msisdn=${encodeURIComponent(msisdn)}`);
+                const data = await response.json();
+                
+                if (!data.ok) {
+                    throw new Error(data.error?.message || 'Failed to resolve lift');
+                }
+                
+                currentLift = data.data.lift;
+                
+                // Populate lift form
+                document.getElementById('site-name').value = currentLift.site_name || '';
+                document.getElementById('building').value = currentLift.building || '';
+                document.getElementById('notes').value = currentLift.notes || '';
+                
+                // Show lift info section
+                document.getElementById('lift-info').style.display = 'block';
+                
+                // Load contacts
+                await loadContacts();
+                
+                showAlert(`Lift resolved: ${currentLift.site_name || 'Unnamed'} (${currentLift.msisdn})`, 'success');
+                
+            } catch (error) {
+                showAlert(`Error: ${error.message}`, 'error');
+                console.error('Resolve lift error:', error);
+            }
+        }
+
+        // Save lift information
+        async function saveLift() {
+            if (!currentLift) {
+                showAlert('No lift selected', 'error');
+                return;
+            }
+
+            try {
+                const liftData = {
+                    msisdn: currentLift.msisdn,
+                    site_name: document.getElementById('site-name').value.trim(),
+                    building: document.getElementById('building').value.trim(),
+                    notes: document.getElementById('notes').value.trim()
+                };
+
+                const response = await fetch(`${BASE_URL}/admin/lifts`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(liftData)
+                });
+
+                const data = await response.json();
+                
+                if (!data.ok) {
+                    throw new Error(data.error?.message || 'Failed to save lift');
+                }
+                
+                currentLift = data.data;
+                showAlert('Lift saved successfully', 'success');
+                
+            } catch (error) {
+                showAlert(`Error saving lift: ${error.message}`, 'error');
+                console.error('Save lift error:', error);
+            }
+        }
+
+        // Load contacts for current lift
+        async function loadContacts() {
+            if (!currentLift) return;
+
+            try {
+                const response = await fetch(`${BASE_URL}/admin/lifts/${currentLift.id}/contacts`);
+                const data = await response.json();
+                
+                if (!data.ok) {
+                    throw new Error(data.error?.message || 'Failed to load contacts');
+                }
+                
+                currentContacts = data.data || [];
+                renderContacts();
+                
+            } catch (error) {
+                showAlert(`Error loading contacts: ${error.message}`, 'error');
+                console.error('Load contacts error:', error);
+            }
+        }
+
+        // Render contacts list
+        function renderContacts() {
+            const container = document.getElementById('contacts-list');
+            
+            if (currentContacts.length === 0) {
+                container.innerHTML = '<div class="empty-state"><h3>No contacts linked</h3><p>Add a contact below to link it to this lift.</p></div>';
+                return;
+            }
+
+            container.innerHTML = currentContacts.map(contact => `
+                <div class="contact-item">
+                    <div class="contact-info">
+                        <div class="contact-name">${escapeHtml(contact.display_name || 'Unnamed')}</div>
+                        <div class="contact-details">
+                            ${escapeHtml(contact.primary_msisdn)} • ${escapeHtml(contact.role || 'No role')}
+                            ${contact.relation ? ` • ${escapeHtml(contact.relation)}` : ''}
+                        </div>
+                    </div>
+                    <button class="btn btn-danger" onclick="unlinkContact('${contact.id}')">Unlink</button>
+                </div>
+            `).join('');
+        }
+
+        // Add/update contact and link to lift
+        async function addContact() {
+            if (!currentLift) {
+                showAlert('No lift selected', 'error');
+                return;
+            }
+
+            const contactData = {
+                display_name: document.getElementById('contact-name').value.trim(),
+                primary_msisdn: document.getElementById('contact-msisdn').value.trim(),
+                email: document.getElementById('contact-email').value.trim() || null,
+                role: document.getElementById('contact-role').value.trim() || null
+            };
+
+            if (!contactData.display_name || !contactData.primary_msisdn) {
+                showAlert('Display name and MSISDN are required', 'error');
+                return;
+            }
+
+            try {
+                // Create/update contact
+                const contactResponse = await fetch(`${BASE_URL}/admin/contacts`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(contactData)
+                });
+
+                const contactResult = await contactResponse.json();
+                
+                if (!contactResult.ok) {
+                    throw new Error(contactResult.error?.message || 'Failed to save contact');
+                }
+
+                const contact = contactResult.data;
+
+                // Link contact to lift
+                const relation = document.getElementById('contact-relation').value.trim();
+                const linkResponse = await fetch(`${BASE_URL}/admin/lifts/${currentLift.id}/contacts`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        contact_id: contact.id,
+                        relation: relation || 'tenant'
+                    })
+                });
+
+                const linkResult = await linkResponse.json();
+                
+                if (!linkResult.ok) {
+                    throw new Error(linkResult.error?.message || 'Failed to link contact to lift');
+                }
+
+                // Clear form
+                document.getElementById('contact-name').value = '';
+                document.getElementById('contact-msisdn').value = '';
+                document.getElementById('contact-email').value = '';
+                document.getElementById('contact-role').value = '';
+                document.getElementById('contact-relation').value = '';
+
+                // Reload contacts
+                await loadContacts();
+                
+                showAlert('Contact added and linked successfully', 'success');
+                
+            } catch (error) {
+                showAlert(`Error adding contact: ${error.message}`, 'error');
+                console.error('Add contact error:', error);
+            }
+        }
+
+        // Unlink contact from lift
+        async function unlinkContact(contactId) {
+            if (!currentLift) return;
+
+            if (!confirm('Are you sure you want to unlink this contact?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${BASE_URL}/admin/lifts/${currentLift.id}/contacts/${contactId}`, {
+                    method: 'DELETE'
+                });
+
+                const data = await response.json();
+                
+                if (!data.ok) {
+                    throw new Error(data.error?.message || 'Failed to unlink contact');
+                }
+
+                await loadContacts();
+                showAlert('Contact unlinked successfully', 'success');
+                
+            } catch (error) {
+                showAlert(`Error unlinking contact: ${error.message}`, 'error');
+                console.error('Unlink contact error:', error);
+            }
+        }
+
+        // Load messages for current lift
+        async function loadMessages() {
+            if (!currentLift) return;
+
+            try {
+                const response = await fetch(`${BASE_URL}/admin/messages?lift_id=${currentLift.id}&limit=50`);
+                const data = await response.json();
+                
+                if (!data.ok) {
+                    throw new Error(data.error?.message || 'Failed to load messages');
+                }
+                
+                currentMessages = data.data.items || [];
+                renderMessages();
+                
+            } catch (error) {
+                showAlert(`Error loading messages: ${error.message}`, 'error');
+                console.error('Load messages error:', error);
+            }
+        }
+
+        // Render messages list
+        function renderMessages() {
+            const container = document.getElementById('messages-list');
+            
+            if (currentMessages.length === 0) {
+                container.innerHTML = '<div class="empty-state"><h3>No messages</h3><p>No messages found for this lift.</p></div>';
+                return;
+            }
+
+            container.innerHTML = currentMessages.map(message => `
+                <div class="message-item">
+                    <div class="message-header">
+                        <div class="message-direction direction-${message.direction}">
+                            ${message.direction === 'in' ? 'Inbound' : 'Outbound'}
+                        </div>
+                        <div class="message-time">${formatDate(message.ts)}</div>
+                    </div>
+                    <div class="message-body">${escapeHtml(message.body || 'No content')}</div>
+                </div>
+            `).join('');
+        }
+
+        // Utility functions
+        function showAlert(message, type) {
+            // Remove existing alerts
+            document.querySelectorAll('.alert').forEach(alert => alert.remove());
+            
+            const alert = document.createElement('div');
+            alert.className = `alert alert-${type}`;
+            alert.textContent = message;
+            
+            const container = document.querySelector('.container');
+            container.insertBefore(alert, container.firstChild);
+            
+            // Auto-remove after 5 seconds
+            setTimeout(() => {
+                alert.remove();
+            }, 5000);
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function formatDate(dateString) {
+            const date = new Date(dateString);
+            return date.toLocaleString();
+        }
+    </script>
+</body>
+</html>
