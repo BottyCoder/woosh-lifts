@@ -53,7 +53,7 @@ gcloud run deploy "$SVC" --image "$IMAGE" --region "$REGION" --allow-unauthentic
   --service-account "$RUN_SA" --add-cloudsql-instances "$INSTANCE_CONN" \
   --set-env-vars ENV=prod,DB_SOCKET_DIR=/cloudsql,DB_INSTANCE_CONNECTION_NAME="$INSTANCE_CONN",DB_NAME=wooshlifts,DB_USER=app_user,DB_SSL=false,BRIDGE_BASE_URL=https://wa.woosh.ai \
   --set-secrets BRIDGE_API_KEY=BRIDGE_API_KEY:latest,DB_PASSWORD=DB_PASSWORD:latest \
-  --startup-timeout=300s --max-instances=5 --concurrency=20
+  --timeout=300s --max-instances=5 --concurrency=20
 
 echo "==> Waiting for latest revision to be Ready"
 REV="$(gcloud run services describe "$SVC" --region "$REGION" --format='value(status.latestCreatedRevisionName)')"
