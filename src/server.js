@@ -75,6 +75,15 @@ app.use('/sms', smsRoutes);
 // Mount send routes
 app.use('/send', sendRoutes);
 
+// Template flow router (buttons: Test | Maintenance | Entrapment)
+try {
+  const templateFlow = require('./routes/templateFlow');
+  app.use(templateFlow);
+  console.log('[boot] templateFlow router mounted');
+} catch (e) {
+  console.warn('[boot] templateFlow router not mounted:', e.message);
+}
+
 // Admin status (enriched, no secrets)
 app.get('/admin/status', async (req, res) => {
   try {
