@@ -1,35 +1,19 @@
-// Single entry point: delegate everything to src/server.js
-const { spawn } = require('child_process');
+﻿"use strict";
+const http = require("http");
+const app  = require("./src/server");
+const PORT = process.env.PORT || 8080;
 
-async function startServer() {
+function start() {
   try {
-    // Run migrations first
-    console.log('[server] Running database migrations...');
-    const migrate = spawn('node', ['scripts/migrate.js'], { stdio: 'inherit' });
-    
-    await new Promise((resolve, reject) => {
-      migrate.on('close', (code) => {
-        if (code !== 0) {
-          console.error('[server] Migration failed, exiting');
-          reject(new Error('Migration failed'));
-        } else {
-          console.log('[server] Migrations completed successfully');
-          resolve();
-        }
-      });
+    const srv = http.createServer(app);
+    srv.listen(PORT, "0.0.0.0", () => {
+      console.log(`[server] Listening on 0.0.0.0:${PORT}`);
     });
-    
-    // Start the server
-    const app = require('./src/server');
-    const PORT = process.env.PORT || 8080;
-    app.listen(PORT, () => {
-      console.log(JSON.stringify({ event: 'server_listen', port: PORT, build: process.env.APP_BUILD || null }));
-    });
-    
-  } catch (error) {
-    console.error('[server] Startup error:', error);
+  } catch (err) {
+    console.error("[server] Startup error:", err);
     process.exit(1);
   }
 }
 
-startServer();
+if (require.main === module) start();
+module.exports = app;
