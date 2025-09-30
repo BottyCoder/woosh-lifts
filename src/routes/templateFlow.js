@@ -25,21 +25,43 @@ try {
 
 const BRIDGE_BASE_URL = process.env.BRIDGE_BASE_URL || 'https://wa.woosh.ai';
 const BRIDGE_API_KEY  = process.env.BRIDGE_API_KEY || '';
+const https = require('https');
+const { URL } = require('url');
 
-async function sendWA(to, text) {
-  const url = `${BRIDGE_BASE_URL}/api/messages/send`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Api-Key': BRIDGE_API_KEY
-    },
-    body: JSON.stringify({ to, text })
+function sendWA(to, text) {
+  return new Promise((resolve, reject) => {
+    try {
+      const target = new URL(`${BRIDGE_BASE_URL}/api/messages/send`);
+      const payload = JSON.stringify({ to, text });
+      const opts = {
+        method: 'POST',
+        hostname: target.hostname,
+        port: target.port || 443,
+        path: target.pathname,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+          'X-Api-Key': BRIDGE_API_KEY
+        }
+      };
+      const req = https.request(opts, (res) => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          // Drain and resolve
+          res.resume();
+          resolve();
+        } else {
+          let body = '';
+          res.on('data', (c) => (body += c));
+          res.on('end', () => reject(new Error(`Bridge send failed ${res.statusCode}: ${body}`)));
+        }
+      });
+      req.on('error', reject);
+      req.write(payload);
+      req.end();
+    } catch (e) {
+      reject(e);
+    }
   });
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '');
-    throw new Error(`Bridge send failed ${res.status}: ${detail}`);
-  }
 }
 
 function classify(text) {
