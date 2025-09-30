@@ -706,8 +706,8 @@ const HOST = '0.0.0.0';
 
 async function start() {
   try {
-    // migrations are handled by root server.js when using that entry point
-    // for direct src/server.js startup, skip migrations to avoid dependency issues
+    // run migrations first (ok; they're quick)
+    await runMigrations?.();
 
     // start background processors without blocking startup
     try {

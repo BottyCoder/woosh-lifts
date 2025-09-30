@@ -230,7 +230,7 @@ app.post('/sms/direct', jsonParser, async (req, res) => {
           logEvent('wa_template_fail', { sms_id: smsId, to: plus(to), status, body: errBody, variant: 'bridge_raw' });
         }
       }
-    // fallback → plain text
+    // fallback â†’ plain text
     try {
       const r2 = await sendTextViaBridge({ 
         baseUrl: BRIDGE_BASE_URL,
@@ -706,8 +706,8 @@ const HOST = '0.0.0.0';
 
 async function start() {
   try {
-    // migrations are handled by root server.js when using that entry point
-    // for direct src/server.js startup, skip migrations to avoid dependency issues
+    // run migrations first (ok; they're quick)
+    await runMigrations?.();
 
     // start background processors without blocking startup
     try {
@@ -733,3 +733,7 @@ if (require.main === module) {
 }
 
 module.exports = { app, start };
+
+app.get('/test', (req, res) => { res.send('ok'); });
+
+
